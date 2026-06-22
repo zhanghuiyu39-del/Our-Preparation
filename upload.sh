@@ -5,10 +5,10 @@
 # ========================================
 
 # ---------- 手动替换区域 ----------
-TEAM="张锐涛组"                              # 你的组别文件夹名
-PROJECT_PATH="C:/Users/张书清/Desktop/电赛资料/省赛/2021年省赛练习/STM32控制方案/STM32_plan"  # 要上传的工程路径
-COMMIT_MSG="上传STM32_plan工程"               # 提交说明
-REPO_DIR="C:/Users/张书清/Desktop/电赛资料/省赛/Preparation-for-the-provincial-electronic-competition"  # 仓库本地路径
+TEAM="李源德组"                              # 你的组别文件夹名
+PROJECT_PATH="C:\Users\张辉宇\Desktop\STM32_HAL\Xiaosai\Xiaosai4.6"  # 要上传的工程路径
+COMMIT_MSG="上传上次校赛样例"               # 提交说明
+REPO_DIR="C:\Users\张辉宇\Desktop\test"  # 仓库本地路径
 # ----------------------------------
 
 cd "$REPO_DIR" || { echo "错误：仓库路径不存在 - $REPO_DIR"; exit 1; }
