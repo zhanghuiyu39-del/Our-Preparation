@@ -164,11 +164,11 @@ int main(void)
 	
   // ==================== 电流内环（先整定）====================
 	// 标准最优参数：Kp=0.6，Kr=40，wc=10
-	QPR_Init(&Current_QPR, 0.6f,  40.0f, WC, W0);
+//	QPR_Init(&Current_QPR, 0.6f,  40.0f, WC, W0);
 
 	// ==================== 电压外环（后整定）====================
 	// 标准最优参数：Kp=1.2，Kr=80，wc=10
-	QPR_Init(&Voltage_QPR, 1.2f,  80.0f, WC, W0);
+//	QPR_Init(&Voltage_QPR, 1.2f,  80.0f, WC, W0);
 
   /* USER CODE END Init */
 
