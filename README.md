@@ -6,10 +6,9 @@
 
 | 组别 | 文件夹名 |
 |------|---------|
-| 蔡晓越组 | `蔡晓越组/` |
-| 徐博涵组 | `徐博涵组/` |
-| 邱照宇组 | `邱照宇组/` |
-| 张锐涛组 | `张锐涛组/` |
+| 李源德组 | `李源德组/` |
+| xxx组 | `xxx组/` |
+| xxx组 | `xxx组/` |
 
 ## 准备工作（只需一次）
 
@@ -38,7 +37,7 @@ cd Preparation-for-the-provincial-electronic-competition
 2. 修改顶部四个变量：
 
 ```bash
-TEAM="张锐涛组"                              # 你的组别文件夹名
+TEAM="李源德组"                              # 你的组别文件夹名
 PROJECT_PATH="C:/Users/.../你的工程路径"      # 要上传的工程路径
 COMMIT_MSG="上传XXX工程"                      # 提交说明
 REPO_DIR="C:/Users/.../Preparation-for-the-provincial-electronic-competition"  # 仓库本地路径
@@ -86,9 +85,9 @@ git push origin main
 ```bash
 cd Preparation-for-the-provincial-electronic-competition
 git pull origin main
-cp -r ~/自己工程文件夹路径/* 张兆喆组/
-git add 张兆喆组/
-git commit -m "张兆喆组 - 上传2ASK调制工程"
+cp -r ~/自己工程文件夹路径/* 李源德组/
+git add 李源德组/
+git commit -m "李源德组 - 上传2ASK调制工程"
 git push origin main
 ```
 
