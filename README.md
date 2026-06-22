@@ -80,7 +80,7 @@ git push origin main
 
 ---
 
-## 完整示例（张兆喆组为例）
+## 完整示例（李源德组为例）
 
 ```bash
 cd Preparation-for-the-provincial-electronic-competition
