@@ -234,7 +234,7 @@ i= 0;
 
     /* USER CODE BEGIN 3 */
 
-
+//
 		OLED_ShowString(1,1,"V_raw:");
 		OLED_ShowString(2,1,"I_raw:");
 		OLED_ShowNum(1,7,AD_Value[0],4);
