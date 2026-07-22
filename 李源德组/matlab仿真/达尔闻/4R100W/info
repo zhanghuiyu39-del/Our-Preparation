@@ -1,0 +1,721 @@
+{
+  "uuid": "4cbfe46f84e4a10262fc8a7774648523",
+  "path": "Offline/4R100W",
+  "name": "4R100W",
+  "content": "",
+  "created_at": "2025-08-02 10:31:57",
+  "updated_at": "2025-08-02 10:38:42",
+  "stick": "",
+  "documents": [
+    {
+      "uuid": "41c7662f5261eb7dbef60a9b1594013c",
+      "title": "Sheet_1",
+      "description": "",
+      "docType": "1",
+      "master": "",
+      "thumb": "/images/thumb-default.png",
+      "components": {
+        "ed9eb2faffb34286820a54a14e9e9e24": 2,
+        "5d56951fd43d4b5083b0f3cd9bfd5587": 28,
+        "6004427743dbdd555d6b794af143fe13": 4,
+        "fcaba4851eda4ca19d4326a668633a30": 3,
+        "b45f8e44dc3861eceffdd0c4ad999f51": 6,
+        "1fd67ba9da7d4b3ab7c9cd5858f58727": 4,
+        "dbfa7da092bc44faa13a86aaa683160b": 7,
+        "e545f26e87c74952857381bd0bff848e": 9,
+        "530fceac7dc4d415254bb9cb0af9c7b9": 8,
+        "825586439d9f5f76b103cefffab527a8": 1,
+        "f665646c1fa24893800b8e7a96d40f3e": 1,
+        "54ce885fd785455db8a16ec3a06a1aeb": 1,
+        "777cbb55a9764ea9a0e9c7c3bbd45806": 2,
+        "00bc868b06864cee987cd396a064eeb9": 8,
+        "f680c545638142b8968f5570d531bdcc": 3,
+        "45ddbab4559a43c6bc95d2ca22fb25a0": 1
+      },
+      "BOM": [
+        [
+          "Value",
+          "Quantity",
+          "Package",
+          "Components",
+          "CustomPara"
+        ],
+        [
+          "47u",
+          2,
+          "CAP-8*12",
+          "C1,C8",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "102",
+          2,
+          "RAD-0.1",
+          "C2,C9",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "100u",
+          6,
+          "CAP-8*12",
+          "C3,C5,C6,C10,C12,C13",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "101",
+          2,
+          "RAD-0.1",
+          "C4,C11",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "105",
+          3,
+          "RAD-0.1",
+          "C7,C14,C24",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "1000uF",
+          8,
+          "CAP-13*25",
+          "C15,C16,C17,C18,C19,C20,C21,C22",
+          {
+            "Manufacturer Part": "SHF1000UF35V01EC4584",
+            "Manufacturer": "KNSCHA(科尼盛)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C2992582"
+          }
+        ],
+        [
+          "1mF",
+          1,
+          "CAP-10*17",
+          "C23",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "1N4148",
+          4,
+          "DO-35_BD2.0-L4.0-P8.00-D0.5-FD",
+          "D1,D2,D3,D4",
+          {
+            "Manufacturer Part": "1N4148",
+            "Manufacturer": "ST(先科)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C14516"
+          }
+        ],
+        [
+          "PJ313D",
+          1,
+          "AUDIO-TH_PJ313D",
+          "J1",
+          {
+            "Manufacturer Part": "313耳机座直插",
+            "Manufacturer": "BOOMELE(博穆精密)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C18167"
+          }
+        ],
+        [
+          "KF7.62-3P",
+          2,
+          "CONN-TH_KF7.62-3P",
+          "J2,J3",
+          {
+            "Manufacturer Part": "KF7.62-3P",
+            "Manufacturer": "KEFA(科发)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C707825"
+          }
+        ],
+        [
+          "XH2.542P",
+          3,
+          "CONN-TH_XH2.54-2P",
+          "J4,J5,J6",
+          {
+            "Manufacturer Part": "XH2.542P插座",
+            "Manufacturer": "null",
+            "Supplier": "LCSC",
+            "Supplier Part": "C9900016948"
+          }
+        ],
+        [
+          "KF301-5.0-2P",
+          1,
+          "CONN-TH_P5.00_KF301-5.0-2P",
+          "J8",
+          {
+            "Manufacturer Part": "KF301-5.0-2P",
+            "Manufacturer": "KEFA(科发)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C474881"
+          }
+        ],
+        [
+          "C1815",
+          6,
+          "TO-92-3_L4.9-W3.7-P1.27-L",
+          "Q1,Q2,Q4,Q10,Q11,Q13",
+          {
+            "Manufacturer Part": "C1815-TA",
+            "Manufacturer": "CJ(江苏长电/长晶)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C57616"
+          }
+        ],
+        [
+          "A1015",
+          4,
+          "TO-92-3_L4.9-W3.7-P1.27-L",
+          "Q3,Q5,Q12,Q14",
+          {
+            "Manufacturer Part": "2SA1015(RANGE:200-400)",
+            "Manufacturer": "CJ(江苏长电/长晶)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C168617"
+          }
+        ],
+        [
+          "TIP42C",
+          8,
+          "TO-220-3_L10.0-W4.5-P2.54-T",
+          "Q6,Q7,Q8,Q9,Q15,Q16,Q17,Q18",
+          {
+            "Manufacturer Part": "TIP42C",
+            "Manufacturer": "CJ(江苏长电/长晶)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C92311"
+          }
+        ],
+        [
+          "33K",
+          6,
+          "R_AXIAL-0.3",
+          "R1,R3,R5,R16,R18,R20",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "3K3",
+          2,
+          "R_AXIAL-0.3",
+          "R2,R17",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "XXX",
+          2,
+          "R_AXIAL-0.3",
+          "R4,R19",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "4K7",
+          2,
+          "R_AXIAL-0.3",
+          "R6,R21",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "1K",
+          4,
+          "R_AXIAL-0.3",
+          "R7,R8,R22,R23",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "220R",
+          4,
+          "R_AXIAL-0.3",
+          "R9,R10,R24,R25",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "0R33 5W",
+          8,
+          "R_AXIAL-0.4",
+          "R11,R12,R13,R14,R26,R27,R28,R29",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "10R",
+          2,
+          "R_AXIAL-0.3",
+          "R15,R30",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "103",
+          2,
+          "RES-ADJ-SMD_RM065-V1",
+          "RP1,RP2",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "LCSC",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "WH148-2",
+          1,
+          "WH148电位器双",
+          "RP3",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "203",
+          1,
+          "RES-ADJ-SMD_RM065-V1",
+          "RP4",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "LCSC",
+            "Supplier Part": ""
+          }
+        ]
+      ],
+      "updateTime": 1754101917,
+      "createTime": 1754101917,
+      "histories": [],
+      "created_at": "2025-08-02 10:31:57",
+      "updated_at": "2025-08-02 10:31:57"
+    },
+    {
+      "uuid": "b288d4d87eab23fdb2bbb745c99c5396",
+      "puuid": "4cbfe46f84e4a10262fc8a7774648523",
+      "title": "PCB_4R100W",
+      "filename": "PCB_4R100W.json",
+      "description": "",
+      "docType": "3",
+      "master": "",
+      "thumb": "/images/thumb-default.png",
+      "components": {
+        "9f88b1ba65a44011bd2f7495120c4f21": 1,
+        "ea82fbe34d7840de9fdcf3145ab199ef": 7,
+        "86f27ccc84d24a4baffed53764383fbe": 3,
+        "c444d117946441c3ab8b7492a6a9cd72": 1,
+        "ee43b3d01f1c4a6bb59ea1a40f632d8a": 8,
+        "11459c87bbb44f03ba74cbbe3d83b093": 8,
+        "1cea0b08697147e4bdb2486b0405004e": 2,
+        "6924b36489de4921bb29ca14bf27c33f": 10,
+        "fb8b10620b5a459d9b03fd14987346f4": 8,
+        "3eb1249f3ebb4284ae221b0379016582": 22,
+        "5905db98cde4487fbb177070aa85bbe1": 8,
+        "07f65a035ec440c9ba8d8743498f47ca": 4,
+        "7bc2c18d5db24251b73f6057e8a74327": 1,
+        "5a02b60496ec4e2ba586bce779888583": 3,
+        "0ecb01aec9b44a05a3bf7161aac98cf5": 1
+      },
+      "BOM": [
+        [
+          "Value",
+          "Quantity",
+          "Package",
+          "Components",
+          "CustomPara"
+        ],
+        [
+          "1mF",
+          1,
+          "CAP-10*17",
+          "C23",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "105",
+          3,
+          "RAD-0.1",
+          "C24,C7,C14",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "XH2.542P",
+          3,
+          "CONN-TH_XH2.54-2P",
+          "J4,J5,J6",
+          {
+            "Manufacturer Part": "XH2.542P插座",
+            "Manufacturer": "null",
+            "Supplier": "LCSC",
+            "Supplier Part": "C9900016948"
+          }
+        ],
+        [
+          "KF301-5.0-2P",
+          1,
+          "CONN-TH_P5.00_KF301-5.0-2P",
+          "J8",
+          {
+            "Manufacturer Part": "KF301-5.0-2P",
+            "Manufacturer": "KEFA(科发)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C474881"
+          }
+        ],
+        [
+          "47u",
+          2,
+          "CAP-8*12",
+          "C1,C8",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "102",
+          2,
+          "RAD-0.1",
+          "C2,C9",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "101",
+          2,
+          "RAD-0.1",
+          "C4,C11",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "100u",
+          6,
+          "CAP-8*12",
+          "C5,C6,C10,C12,C13,C3",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "1000uF",
+          8,
+          "CAP-13*25",
+          "C15,C16,C17,C18,C19,C20,C21,C22",
+          {
+            "Manufacturer Part": "SHF1000UF35V01EC4584",
+            "Manufacturer": "KNSCHA(科尼盛)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C2992582"
+          }
+        ],
+        [
+          "KF7.62-3P",
+          2,
+          "CONN-TH_KF7.62-3P",
+          "J2,J3",
+          {
+            "Manufacturer Part": "KF7.62-3P",
+            "Manufacturer": "KEFA(科发)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C707825"
+          }
+        ],
+        [
+          "C1815",
+          6,
+          "TO-92-3_L4.9-W3.7-P1.27-L",
+          "Q10,Q11,Q13,Q1,Q2,Q4",
+          {
+            "Manufacturer Part": "C1815-TA",
+            "Manufacturer": "CJ(江苏长电/长晶)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C57616"
+          }
+        ],
+        [
+          "A1015",
+          4,
+          "TO-92-3_L4.9-W3.7-P1.27-L",
+          "Q12,Q14,Q3,Q5",
+          {
+            "Manufacturer Part": "2SA1015(RANGE:200-400)",
+            "Manufacturer": "CJ(江苏长电/长晶)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C168617"
+          }
+        ],
+        [
+          "TIP42C",
+          8,
+          "TO-220-3_L10.0-W4.5-P2.54-T",
+          "Q15,Q16,Q17,Q18,Q6,Q7,Q8,Q9",
+          {
+            "Manufacturer Part": "TIP42C",
+            "Manufacturer": "CJ(江苏长电/长晶)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C92311"
+          }
+        ],
+        [
+          "33K",
+          6,
+          "R_AXIAL-0.3",
+          "R1,R3,R5,R16,R18,R20",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "3K3",
+          2,
+          "R_AXIAL-0.3",
+          "R2,R17",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "XXX",
+          2,
+          "R_AXIAL-0.3",
+          "R4,R19",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "4K7",
+          2,
+          "R_AXIAL-0.3",
+          "R6,R21",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "1K",
+          4,
+          "R_AXIAL-0.3",
+          "R7,R8,R22,R23",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "220R",
+          4,
+          "R_AXIAL-0.3",
+          "R9,R10,R24,R25",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "0R33 5W",
+          8,
+          "R_AXIAL-0.4",
+          "R11,R12,R13,R14,R26,R27,R28,R29",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "10R",
+          2,
+          "R_AXIAL-0.3",
+          "R15,R30",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "1N4148",
+          4,
+          "DO-35_BD2.0-L4.0-P8.00-D0.5-FD",
+          "D1,D2,D3,D4",
+          {
+            "Manufacturer Part": "1N4148",
+            "Manufacturer": "ST(先科)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C14516"
+          }
+        ],
+        [
+          "PJ313D",
+          1,
+          "AUDIO-TH_PJ313D",
+          "J1",
+          {
+            "Manufacturer Part": "313耳机座直插",
+            "Manufacturer": "BOOMELE(博穆精密)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C18167"
+          }
+        ],
+        [
+          "103",
+          2,
+          "RES-ADJ-SMD_RM065-V1",
+          "RP1,RP2",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "LCSC",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "203",
+          1,
+          "RES-ADJ-SMD_RM065-V1",
+          "RP4",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "LCSC",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "WH148-2",
+          1,
+          "WH148电位器双",
+          "RP3",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ]
+      ],
+      "updateTime": 1754102034,
+      "createTime": 1754102034,
+      "histories": [],
+      "created_at": "2025-08-02 10:33:54",
+      "updated_at": "2025-08-02 10:33:54"
+    }
+  ],
+  "sort": [],
+  "title": "4R100W",
+  "foldername": "4R100W",
+  "schfilename": "4R100W.json",
+  "schfilemtime": 1754101917386
+}

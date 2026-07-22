@@ -1,0 +1,620 @@
+{
+  "uuid": "56911f988acfc09ca49b252f8c678c8a",
+  "path": "Offline/500V50A%E4%B8%89%E7%9B%B8%E5%85%A8%E6%A1%A5%E6%9D%BF",
+  "name": "500V50A三相全桥板",
+  "content": "",
+  "created_at": "2026-07-11 01:32:57",
+  "updated_at": "2026-07-18 18:15:48",
+  "stick": "",
+  "documents": [
+    {
+      "uuid": "52961479a1c1bd773110db6bf497cc36",
+      "title": "Sheet_1",
+      "description": "",
+      "docType": "1",
+      "master": "",
+      "thumb": "/images/thumb-default.png",
+      "components": {
+        "5d56951fd43d4b5083b0f3cd9bfd5587": 20,
+        "8ee0ab97a86745998b8ca94d0a1c9bce": 6,
+        "3f96fb0bcd7d42c7bde96cdcd9ce9df0": 25,
+        "95f0eb9238d3403c81471849c3420cfd": 3,
+        "f0bc163659d742bc8f021d00cdeb85b2": 21,
+        "6004427743dbdd555d6b794af143fe13": 6,
+        "ac0b511c1ea34a90b73ce1d9fc7db56d": 1,
+        "5136e5ddb7df40168bfab8f60b3fbfa7": 2,
+        "06795f6fa07d44899772bab8272effb8": 5,
+        "cc5790dfae22422daa4d924cbcd7aac5": 1,
+        "e545f26e87c74952857381bd0bff848e": 5,
+        "a2bc78f7a77d4649af5987d01d09f592": 12,
+        "a4eacdcb63554cb08b3b56477817ab57": 1,
+        "1964ceeb8cbc4272ad90eca0148211b9": 2,
+        "9e449fc52eae44329e8894013c4a19a8": 1,
+        "05fe9f63574b43759a4ead9852c5f589": 3,
+        "7acfa65b08324f578387cf93d6158766": 1
+      },
+      "BOM": [
+        [
+          "Value",
+          "Quantity",
+          "Package",
+          "Components",
+          "CustomPara"
+        ],
+        [
+          "103",
+          6,
+          "RAD-0.3",
+          "C1,C2,C3,C4,C5,C6",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "105",
+          9,
+          "26*8 MKP",
+          "C7,C8,C10,C11,C13,C14,C16,C17,C25",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "104",
+          4,
+          "RAD-0.2",
+          "C9,C12,C15,C30",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "102",
+          6,
+          "RAD-0.2",
+          "C18,C19,C20,C21,C22,C23",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "1mF",
+          1,
+          "CAP-10*25-W-2",
+          "C24",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "100uF",
+          4,
+          "CAP-6.3*11",
+          "C26,C27,C28,C29",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "1N4148",
+          6,
+          "SOD-323",
+          "D1,D2,D3,D4,D5,D6",
+          {
+            "Manufacturer Part": "1N4148",
+            "Manufacturer": "ST(先科)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C14516"
+          }
+        ],
+        [
+          "UF5408",
+          1,
+          "DO-27",
+          "D7",
+          {
+            "Manufacturer Part": "UF5408",
+            "Manufacturer": "LGE(鲁光)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C2903841"
+          }
+        ],
+        [
+          "UF4007",
+          3,
+          "DO-41_BD2.4-L4.7-P8.70-D0.9-FD",
+          "D8,D9,D10",
+          {
+            "Manufacturer Part": "UF4007",
+            "Manufacturer": "星海",
+            "Supplier": "LCSC",
+            "Supplier Part": "C84067"
+          }
+        ],
+        [
+          "PCB-1",
+          5,
+          "PCB-1 35A",
+          "H1,H2,H3,H4,H5",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "KF7.62-2P",
+          1,
+          "CONN-TH_KF7.62-2P",
+          "H6",
+          {
+            "Manufacturer Part": "KF7.62-2P",
+            "Manufacturer": "KEFA(科发)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C707824"
+          }
+        ],
+        [
+          "XH2.54-2P",
+          2,
+          "CONN-TH_XH2.54-2P_1",
+          "H7,H8",
+          {
+            "Manufacturer Part": "WAFER-XH2.54-2PZZ",
+            "Manufacturer": "XUNPU(讯普)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C5359631"
+          }
+        ],
+        [
+          "PZ2.54-2*2",
+          12,
+          "HDR-TH_4P-P2.54-V-M-R2-C2-S2.54",
+          "J1,J2,J3,J4,J5,J6,J7,J8,J9,J10,J11,J12",
+          {
+            "Manufacturer Part": "PZ2.54-2*2",
+            "Manufacturer": "ZHOURI(洲日)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C5156675"
+          }
+        ],
+        [
+          "XH2.54-9P",
+          1,
+          "CONN-TH_9P-P2.50_BX-XH2.54-9PZZ",
+          "J13",
+          {
+            "Manufacturer Part": "BX-XH2.54-9PZZ",
+            "Manufacturer": "Bossie(博锡)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C18077840"
+          }
+        ],
+        [
+          "EE13四路单压悬浮驱动变压器",
+          1,
+          "EE13单压四路悬浮驱动变压器",
+          "L1",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "100uH",
+          1,
+          "L 15*7MM",
+          "L2",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "NCEP02T11T",
+          6,
+          "TO-247-3_L15.5-W5.0-P5.08-L",
+          "Q1,Q2,Q3,Q4,Q5,Q6",
+          {
+            "Manufacturer Part": "IRFP260N",
+            "Manufacturer": "minos(迈诺斯)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C33129608"
+          }
+        ],
+        [
+          "10K",
+          6,
+          "R_AXIAL-0.4",
+          "R1,R3,R5,R7,R9,R11",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "47R1W",
+          6,
+          "R_AXIAL-0.4",
+          "R2,R4,R6,R8,R10,R12",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "2R2",
+          12,
+          "0805",
+          "R13,R14,R15,R16,R17,R18,R19,R20,R21,R22,R23,R24",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "4K7",
+          11,
+          "R_AXIAL-0.4",
+          "R25,R26,R27,R28,R29,R30,R31,R32,R33,R34,R35",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "4R7",
+          6,
+          "R VERTICAL 1/4W",
+          "R37,R38,R39,R40,R41,R42",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "UCC21520DW",
+          3,
+          "SOIC-16_L10.3-W7.5-P1.27-LS10.3-BL",
+          "U1,U2,U3",
+          {
+            "Manufacturer Part": "UCC21520DW",
+            "Manufacturer": "TI(德州仪器)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C200361"
+          }
+        ],
+        [
+          "D882",
+          2,
+          "TO-126P-3_L7.5-W2.6-P2.29-L-A",
+          "VT1,VT2",
+          {
+            "Manufacturer Part": "D882P",
+            "Manufacturer": "null",
+            "Supplier": "LCSC",
+            "Supplier Part": "C9900159908"
+          }
+        ]
+      ],
+      "updateTime": 1784369637,
+      "createTime": 1783704777,
+      "histories": [],
+      "created_at": "2026-07-11 01:32:57",
+      "updated_at": "2026-07-18 18:13:57"
+    },
+    {
+      "uuid": "96b8af4cfe8468bf4a20e9318c24d7e8",
+      "puuid": "56911f988acfc09ca49b252f8c678c8a",
+      "title": "PCB_500V50A三相全桥板",
+      "filename": "PCB_500V50A三相全桥板.json",
+      "description": "",
+      "docType": "3",
+      "master": "",
+      "thumb": "/images/thumb-default.png",
+      "components": {
+        "75844c5980bb4094beb1dc6c0a3a9856": 17,
+        "f4be5618df7643449a9be8934041f97a": 1,
+        "f9b6c4acbda64b569861a21e133c291c": 3,
+        "466c185f9e7140828ba5c856144a41c1": 11,
+        "e5b1a93db613440ab007ebe24be89bbf": 4,
+        "e36402b5c04d43e68a7ccc1e398eea12": 1,
+        "319d72c1fd224fc98d5737f0757dc945": 1,
+        "5df2cdc3ff3c4e30b952412bc55a2753": 1,
+        "72844a0312174407916e057b1e33b1c7": 2,
+        "5905db98cde4487fbb177070aa85bbe1": 18,
+        "18fc52ec543d4c168333f60d49425c09": 12,
+        "51067e07ff8d41fd9007d6402f9fbabf": 1,
+        "58cf47cc86d44a6a9f41d42cd83458d8": 6,
+        "0d14e6c62b14419a891d7c175b7eca4f": 12,
+        "921e2083384c476180135ab85281d0ae": 6,
+        "3b3e624c5c4f4f16baa0a31f8e3ab9be": 2,
+        "f1a7bf1c0dbb4847ae291f344e76031d": 5,
+        "98e958781ba843fa814915fd87121eff": 1,
+        "fe09a4de709343b4b313918e1952f3ba": 2,
+        "1457c48e3df841ca9f318c5654201ae0": 6,
+        "c3a3a479239346a8bb3da07840bfe89e": 3
+      },
+      "BOM": [
+        [
+          "Value",
+          "Quantity",
+          "Package",
+          "Components",
+          "CustomPara"
+        ],
+        [
+          "103",
+          6,
+          "RAD-0.3",
+          "C1,C2,C3,C4,C5,C6",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "105",
+          2,
+          "26*8 MKP",
+          "C7,C8",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "104",
+          3,
+          "RAD-0.2",
+          "C9,C12,C15",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "105",
+          6,
+          "RAD-0.2",
+          "C10,C11,C13,C14,C16,C17",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "102",
+          6,
+          "RAD-0.2",
+          "C18,C19,C20,C21,C22,C23",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "1mF",
+          1,
+          "CAP-10*25",
+          "C24",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "1N4148",
+          6,
+          "DO-35_BD2.0-L4.2-P8.20-D0.5-R-RD",
+          "D1,D2,D3,D4,D5,D6",
+          {
+            "Manufacturer Part": "1N4148",
+            "Manufacturer": "ST(先科)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C14516"
+          }
+        ],
+        [
+          "UF4007",
+          3,
+          "DO-41_BD2.4-L4.7-P8.70-D0.9-FD",
+          "D7,D8,D9",
+          {
+            "Manufacturer Part": "UF4007",
+            "Manufacturer": "星海",
+            "Supplier": "LCSC",
+            "Supplier Part": "C84067"
+          }
+        ],
+        [
+          "PCB-1",
+          5,
+          "PCB-1 35A",
+          "H1,H2,H3,H4,H5",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "KF7.62-2P",
+          1,
+          "CONN-TH_KF7.62-2P",
+          "H6",
+          {
+            "Manufacturer Part": "KF7.62-2P",
+            "Manufacturer": "KEFA(科发)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C707824"
+          }
+        ],
+        [
+          "XH2.54-2P",
+          2,
+          "CONN-TH_XH2.54-2P_1",
+          "H7,H8",
+          {
+            "Manufacturer Part": "WAFER-XH2.54-2PZZ",
+            "Manufacturer": "XUNPU(讯普)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C5359631"
+          }
+        ],
+        [
+          "XH2.54-9P",
+          1,
+          "CONN-TH_9P-P2.50_BX-XH2.54-9PZZ",
+          "J1",
+          {
+            "Manufacturer Part": "BX-XH2.54-9PZZ",
+            "Manufacturer": "Bossie(博锡)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C18077840"
+          }
+        ],
+        [
+          "NCEP02T11T",
+          6,
+          "TO-247-3_L15.5-W5.0-P5.08-L",
+          "Q1,Q2,Q3,Q4,Q5,Q6",
+          {
+            "Manufacturer Part": "IRFP260N",
+            "Manufacturer": "minos(迈诺斯)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C33129608"
+          }
+        ],
+        [
+          "10K",
+          6,
+          "R_AXIAL-0.4",
+          "R1,R3,R5,R7,R9,R11",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "47R1W",
+          6,
+          "R_AXIAL-0.4",
+          "R2,R4,R6,R8,R10,R12",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "2R2",
+          15,
+          "R_AXIAL-0.4",
+          "R13,R14,R15,R16,R17,R18,R19,R20,R21,R22,R23,R24,R28,R32,R36",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "4K7",
+          9,
+          "R_AXIAL-0.4",
+          "R25,R26,R27,R29,R30,R31,R33,R34,R35",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "4R7",
+          6,
+          "R_AXIAL-0.3",
+          "R37,R38,R39,R40,R41,R42",
+          {
+            "Manufacturer Part": "",
+            "Manufacturer": "",
+            "Supplier": "",
+            "Supplier Part": ""
+          }
+        ],
+        [
+          "UCC21520DW",
+          3,
+          "SOIC-16_L10.3-W7.5-P1.27-LS10.3-BL",
+          "U1,U2,U3",
+          {
+            "Manufacturer Part": "UCC21520DW",
+            "Manufacturer": "TI(德州仪器)",
+            "Supplier": "LCSC",
+            "Supplier Part": "C200361"
+          }
+        ]
+      ],
+      "updateTime": 1784369748,
+      "createTime": 1783774861,
+      "histories": [],
+      "created_at": "2026-07-11 21:01:01",
+      "updated_at": "2026-07-18 18:15:48"
+    }
+  ],
+  "sort": [],
+  "title": "500V50A三相全桥板",
+  "foldername": "500V50A三相全桥板",
+  "schfilename": "500V50A三相全桥板.json",
+  "schfilemtime": 1784369637309
+}
