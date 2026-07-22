@@ -1,0 +1,8 @@
+#ifndef RTW_HEADER_x2026A2022b_acc_types_h_
+#define RTW_HEADER_x2026A2022b_acc_types_h_
+typedef struct P_RMS_x2026A2022b_T_ P_RMS_x2026A2022b_T ; typedef struct
+P_TrueRMS_x2026A2022b_T_ P_TrueRMS_x2026A2022b_T ; typedef struct
+P_RMS_x2026A2022b_a_T_ P_RMS_x2026A2022b_a_T ; typedef struct
+P_TrueRMS_x2026A2022b_d_T_ P_TrueRMS_x2026A2022b_d_T ; typedef struct
+P_x2026A2022b_T_ P_x2026A2022b_T ;
+#endif
