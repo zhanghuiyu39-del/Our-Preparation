@@ -1,0 +1,8 @@
+../Core/user/control.c:25:7:get_voltage_reference	2
+../Core/user/control.c:57:6:Control_Init	2
+../Core/user/control.c:72:7:voltage_rms_control	4
+../Core/user/control.c:112:7:current_rms_control	4
+../Core/user/control.c:154:7:get_current_reference	2
+../Core/user/control.c:166:7:voltage_pi_controller	3
+../Core/user/control.c:188:7:current_pi_controller	3
+../Core/user/control.c:222:6:Unipolar_modulation	3

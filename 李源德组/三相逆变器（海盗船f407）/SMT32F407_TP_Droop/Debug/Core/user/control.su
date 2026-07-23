@@ -1,0 +1,8 @@
+../Core/user/control.c:25:7:get_voltage_reference	16	static
+../Core/user/control.c:57:6:Control_Init	16	static
+../Core/user/control.c:72:7:voltage_rms_control	24	static
+../Core/user/control.c:112:7:current_rms_control	40	static
+../Core/user/control.c:154:7:get_current_reference	16	static
+../Core/user/control.c:166:7:voltage_pi_controller	24	static
+../Core/user/control.c:188:7:current_pi_controller	32	static
+../Core/user/control.c:222:6:Unipolar_modulation	40	static

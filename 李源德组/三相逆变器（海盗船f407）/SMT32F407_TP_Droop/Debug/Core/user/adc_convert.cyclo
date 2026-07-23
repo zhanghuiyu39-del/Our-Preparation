@@ -1,0 +1,3 @@
+../Core/user/adc_convert.c:6:7:read_adc_voltage	1
+../Core/user/adc_convert.c:11:7:read_adc_current	1
+../Core/user/adc_convert.c:16:7:read_adc_vdc	1

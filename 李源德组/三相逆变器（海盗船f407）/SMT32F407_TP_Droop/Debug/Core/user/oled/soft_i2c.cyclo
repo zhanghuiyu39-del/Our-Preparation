@@ -1,0 +1,10 @@
+../Core/user/oled/soft_i2c.c:20:13:I2C_Delay	2
+../Core/user/oled/soft_i2c.c:24:17:I2C_Lock	1
+../Core/user/oled/soft_i2c.c:32:13:I2C_Unlock	1
+../Core/user/oled/soft_i2c.c:36:13:I2C_Start	1
+../Core/user/oled/soft_i2c.c:42:13:I2C_Stop	1
+../Core/user/oled/soft_i2c.c:47:12:I2C_WriteByte	3
+../Core/user/oled/soft_i2c.c:63:6:Soft_I2C_Init	1
+../Core/user/oled/soft_i2c.c:68:6:Soft_I2C_WriteCmd	1
+../Core/user/oled/soft_i2c.c:78:6:Soft_I2C_WriteData	1
+../Core/user/oled/soft_i2c.c:88:6:Soft_I2C_WriteMultiData	3

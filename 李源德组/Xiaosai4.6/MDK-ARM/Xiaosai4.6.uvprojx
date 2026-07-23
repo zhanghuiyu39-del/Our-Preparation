@@ -485,6 +485,36 @@
               <FileType>1</FileType>
               <FilePath>../Core/Src/stm32g4xx_hal_msp.c</FilePath>
             </File>
+            <File>
+              <FileName>pr_controller.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\单相逆变器PR控制与VOFA模块\portable\Src\pr_controller.c</FilePath>
+            </File>
+            <File>
+              <FileName>single_phase_control.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\单相逆变器PR控制与VOFA模块\portable\Src\single_phase_control.c</FilePath>
+            </File>
+            <File>
+              <FileName>vofa_justfloat.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\单相逆变器PR控制与VOFA模块\portable\Src\vofa_justfloat.c</FilePath>
+            </File>
+            <File>
+              <FileName>pr_controller.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\..\单相逆变器PR控制与VOFA模块\portable\Inc\pr_controller.h</FilePath>
+            </File>
+            <File>
+              <FileName>single_phase_control.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\..\单相逆变器PR控制与VOFA模块\portable\Inc\single_phase_control.h</FilePath>
+            </File>
+            <File>
+              <FileName>vofa_justfloat.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\..\单相逆变器PR控制与VOFA模块\portable\Inc\vofa_justfloat.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
