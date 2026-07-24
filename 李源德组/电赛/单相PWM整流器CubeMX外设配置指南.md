@@ -27,16 +27,18 @@
 | 整流桥臂 A 低侧 | HRTIM Timer A Output 2 | PA9 | HRTIM1_CHA2 |
 | 整流桥臂 B 高侧 | HRTIM Timer B Output 1 | PA10 | HRTIM1_CHB1 |
 | 整流桥臂 B 低侧 | HRTIM Timer B Output 2 | PA11 | HRTIM1_CHB2 |
-| 输入电流 IPFC | ADC1 Injected Rank 1 | PA1 | ADC1_IN2 |
-| 交流电压 VAC | ADC2 Injected Rank 1 | PC0 | ADC2_IN6 |
-| 母线电压 VBUS | ADC1 Regular Rank 1 | PC1 | ADC1_IN7 |
+| 输入电流 IPFC | ADC1 Regular Rank 1 | PA1 | ADC1_IN2 |
+| 母线电压 VBUS | ADC1 Regular Rank 2 | PC1 | ADC1_IN7 |
+| 交流电压 VAC | ADC2 Regular Rank 1 | PC0 | ADC2_IN6 |
+| ADC1 采样搬运 | DMA（CubeMX 分配通道） | 内部连接 | ADC1 DMA Request |
+| ADC2 采样搬运 | DMA（CubeMX 分配通道） | 内部连接 | ADC2 DMA Request |
 | PFC 驱动使能 | GPIO Output | PE0 | PFC_GATE_EN |
 | 驱动总故障 | HRTIM Fault 3 | PB10 | HRTIM1_FLT3 |
 | PFC 故障诊断 | GPIO EXTI | PE5 | PFC_NFAULT_DIAG |
 | VOFA | USART2 | PD5/PD6 | USART2_TX/RX |
 | 看门狗 | IWDG | 内部 LSI | IWDG |
 
-首版保持 HRTIM C/D/E/F、ADC3/4/5、COMP1~7、DAC、普通 TIM 和全部 DMA 关闭。三相逆变器预留引脚不要分配给无关功能。
+首版只为 ADC1、ADC2 启用两路独立 DMA。HRTIM C/D/E/F、ADC3/4/5、COMP1~7、DAC和普通 TIM 保持关闭。三相逆变器预留引脚不要分配给无关功能。
 
 ## 3. RCC、SYS 与工程设置
 
@@ -100,7 +102,7 @@ PE0 的 CubeMX 初始低电平只是软件措施，不能替代板级下拉。�
 | GPIO Settings | User Label | PFC_NFAULT_DIAG |
 | GPIO mode | External Interrupt Mode with Falling edge trigger detection |
 | Pull-up/Pull-down | No pull，使用板级上拉 |
-| NVIC | EXTI line[9:5] interrupt | Enable，Priority 2 |
+| NVIC | EXTI line[9:5] interrupt | Enable，Priority 3 |
 
 PE5 只用于记录 PFC 驱动器故障来源。真正的快速关断由 PB10/HRTIM1_FLT3 完成。
 
@@ -300,7 +302,7 @@ HAL_HRTIM_ADCTriggerConfig()
 软件启动顺序固定为：
 
 1. PE0保持低；
-2. 完成ADC校准和Fault检查；
+2. 按第6.6节完成ADC校准、两路DMA启动和Fault检查；
 3. HRTIM DLL Ready；
 4. 写入安全比较值；
 5. 同时启动Master/A/B计数器；
@@ -310,78 +312,145 @@ HAL_HRTIM_ADCTriggerConfig()
 
 停止或故障时顺序相反：先拉低PE0，再关闭HRTIM输出，并清零控制器状态。
 
-## 6. ADC1 和 ADC2
+## 6. ADC1、ADC2 与 DMA
 
-### 6.1 ADC 公共参数
+本方案不再使用ADC注入组。ADC1和ADC2均使用规则组，由现有`HRTIM1 ADC Trigger 1`同时触发，并分别通过独立DMA通道循环搬运。ADC1先采IPFC、再采VBUS；ADC2只采VAC，因此IPFC和VAC由两个ADC核近同步开始采样。
 
-ADC1、ADC2均设置：
+### 6.1 ADC公共参数
 
-| CubeMX 分组 | 字段 | 设置值 | HAL 生成结果 |
+ADC1、ADC2共同设置：
+
+| CubeMX 分组 | 字段 | 设置值 | HAL生成结果 |
 | --- | --- | --- | --- |
 | Parameter Settings | Clock Prescaler | Asynchronous clock divided by 4 | `ADC_CLOCK_ASYNC_DIV4` |
 | Parameter Settings | Resolution | 12-bit | `ADC_RESOLUTION_12B` |
 | Parameter Settings | Data Alignment | Right | `ADC_DATAALIGN_RIGHT` |
 | Parameter Settings | Gain Compensation | 0 | `GainCompensation = 0` |
-| Parameter Settings | Scan Conversion Mode | Disable | 单通道组 |
-| Parameter Settings | EOC Selection | End of single conversion | `ADC_EOC_SINGLE_CONV` |
-| Parameter Settings | Low Power Auto Wait | Disable | 无等待 |
-| Parameter Settings | Continuous Conversion | Disable | 外部/软件单次触发 |
-| Parameter Settings | Discontinuous Conversion | Disable | 禁用 |
-| Parameter Settings | DMA Continuous Requests | Disable | 首版无DMA |
+| Parameter Settings | EOC Selection | End of sequence of conversion | `ADC_EOC_SEQ_CONV` |
+| Parameter Settings | Low Power Auto Wait | Disable | `LowPowerAutoWait = DISABLE` |
+| Parameter Settings | Continuous Conversion Mode | Disable | 每次HRTIM事件只启动一个规则序列 |
+| Parameter Settings | Discontinuous Conversion Mode | Disable | 规则序列不中断 |
+| Parameter Settings | DMA Continuous Requests | Enable | `DMAContinuousRequests = ENABLE` |
+| Parameter Settings | Conversion Data Management Mode | DMA Circular Mode | `ADC_CONVERSIONDATA_DMA_CIRCULAR` |
 | Parameter Settings | Overrun | Data overwritten | `ADC_OVR_DATA_OVERWRITTEN` |
-| Parameter Settings | Oversampling | Disable | 禁用 |
+| Parameter Settings | Oversampling | Disable | 不使用硬件过采样 |
+| Regular Conversion | External Trigger Conversion Source | HRTIM1 ADC Trigger 1 | `ADC_EXTERNALTRIG_HRTIM_TRG1` |
+| Regular Conversion | External Trigger Conversion Edge | Rising Edge | `ADC_EXTERNALTRIGCONVEDGE_RISING` |
 
-ADC1和ADC2上电后分别执行单端校准。校准期间PE0和HRTIM输出必须关闭。
+如果CubeMX 6.17页面只显示`Conversion Data Management Mode`而不单独显示`DMA Continuous Requests`，以生成代码中的`ADC_CONVERSIONDATA_DMA_CIRCULAR`为最终核对依据。ADC1和ADC2上电后分别执行单端校准；校准期间PE0、HRTIM计数器和全部HRTIM输出必须关闭。
 
-### 6.2 ADC1注入组：IPFC
-
-| CubeMX 分组 | 字段 | 设置值 |
-| --- | --- | --- |
-| ADC Injected Conversion Mode | Number of Conversions | 1 |
-| Injected Rank 1 | Channel | ADC1_IN2 / PA1 |
-| Injected Rank 1 | Single-ended/Differential | Single-ended |
-| Injected Rank 1 | Sampling Time | 24.5 Cycles |
-| Injected Rank 1 | Offset Number | None |
-| Injected Conversion | External Trigger | HRTIM1 ADC Trigger 1 |
-| Injected Conversion | Trigger Edge | Rising |
-| Injected Conversion | Injected Queue | Disable |
-| Injected Conversion | Queue Injected Context | Disable |
-| Injected Conversion | Automatic Injected Conversion | Disable |
-| Injected Conversion | Injected Discontinuous Mode | Disable |
-
-### 6.3 ADC2注入组：VAC
-
-ADC2使用相同参数，唯一差异为：
-
-| 字段 | 设置值 |
-| --- | --- |
-| Channel | ADC2_IN6 / PC0 |
-| Rank | Injected Rank 1 |
-| Sampling Time | 24.5 Cycles |
-
-两路由同一个HRTIM1 ADC Trigger 1触发。初始采样时间24.5 cycles约为0.576 us；最终值应根据调理运放输出阻抗、RC滤波和实际建立误差调整。
-
-### 6.4 ADC1规则组：VBUS
+### 6.2 ADC1规则序列：IPFC和VBUS
 
 | CubeMX 分组 | 字段 | 设置值 |
 | --- | --- | --- |
-| ADC Regular Conversion Mode | Number of Conversions | 1 |
-| Regular Rank 1 | Channel | ADC1_IN7 / PC1 |
+| Parameter Settings | Scan Conversion Mode | Enable |
+| ADC Regular Conversion Mode | Number of Conversions | 2 |
+| Regular Rank 1 | Channel | ADC1_IN2 / PA1 / IPFC |
 | Regular Rank 1 | Single-ended/Differential | Single-ended |
 | Regular Rank 1 | Sampling Time | 24.5 Cycles |
-| Regular Conversion | External Trigger | Software Start |
-| Regular Conversion | Continuous Conversion | Disable |
-| DMA Settings | DMA | 不添加 |
+| Regular Rank 1 | Offset Number | None |
+| Regular Rank 2 | Channel | ADC1_IN7 / PC1 / VBUS |
+| Regular Rank 2 | Single-ended/Differential | Single-ended |
+| Regular Rank 2 | Sampling Time | 24.5 Cycles |
+| Regular Rank 2 | Offset Number | None |
 
-“每1 ms启动一次VBUS转换”是主循环调度策略，不是CubeMX字段。规则转换不得在10 kHz快速回调内阻塞等待。
+DMA缓冲区顺序必须与Rank顺序一致：
 
-### 6.5 ADC1_2 NVIC与控制入口
+```c
+static uint16_t adc1_dma[2];
+/* adc1_dma[0] = IPFC, adc1_dma[1] = VBUS */
+```
 
-ADC1/ADC2共享`ADC1_2_IRQn`。在NVIC中启用`ADC1 and ADC2 global interrupt`，抢占优先级1。
+VBUS随ADC1规则序列以10 kHz采样，但母线电压PI仍每10个PWM周期运行一次，即保持1 kHz外环频率。不要因采样频率提高而把外环执行频率改成10 kHz。
 
-CubeMX只能配置公共NVIC，无法替软件决定哪个JEOC回调运行控制。生成代码后应只选择一次注入完成事件作为控制入口，并确认本周期ADC1和ADC2样本均已更新，避免一个PWM周期运行两次PR。
+### 6.3 ADC2规则序列：VAC
 
-快速控制回调只允许：采样读取、物理量换算、范围检查、参考生成、PR计算、调制限幅、HRTIM预装载比较值更新和心跳计数。
+| CubeMX 分组 | 字段 | 设置值 |
+| --- | --- | --- |
+| Parameter Settings | Scan Conversion Mode | Disable |
+| ADC Regular Conversion Mode | Number of Conversions | 1 |
+| Regular Rank 1 | Channel | ADC2_IN6 / PC0 / VAC |
+| Regular Rank 1 | Single-ended/Differential | Single-ended |
+| Regular Rank 1 | Sampling Time | 24.5 Cycles |
+| Regular Rank 1 | Offset Number | None |
+
+DMA缓冲区为：
+
+```c
+static uint16_t adc2_dma[1];
+/* adc2_dma[0] = VAC */
+```
+
+24.5 cycles的采样阶段约为`24.5 / 42.5 MHz = 0.576 us`。按12位转换阶段约12.5 cycles估算，ADC1两个通道的完整序列约为1.74 us，明显小于100 us的PWM周期。最终采样时间仍须根据调理运放输出阻抗、RC滤波和实际建立误差调整。
+
+### 6.4 DMA Settings
+
+分别在ADC1和ADC2的`DMA Settings`中点击`Add`。STM32G4使用DMA通道和DMAMUX请求映射；让CubeMX选择无冲突的DMA通道，并在文档或代码评审中记录实际生成的`DMAx_Channely`，不要在配置指南中预设固定通道号。
+
+两路DMA均设置：
+
+| CubeMX字段 | 设置值 | 生成代码中应看到 |
+| --- | --- | --- |
+| DMA Request | ADC1或ADC2 | 与对应ADC匹配 |
+| Direction | Peripheral To Memory | `DMA_PERIPH_TO_MEMORY` |
+| Mode | Circular | `DMA_CIRCULAR` |
+| Peripheral Increment Address | Disable | `DMA_PINC_DISABLE` |
+| Memory Increment Address | Enable | `DMA_MINC_ENABLE` |
+| Peripheral Data Width | Half Word | `DMA_PDATAALIGN_HALFWORD` |
+| Memory Data Width | Half Word | `DMA_MDATAALIGN_HALFWORD` |
+| Priority | High或Very High | 不得低于普通遥测外设DMA |
+
+本方案使用两个独立DMA通道，不使用ADC双重模式，也不使用DMA双缓冲。STM32G474的Cortex-M4没有D-Cache，因此不需要额外执行Cache Clean/Invalidate。
+
+HAL在`HAL_ADC_Start_DMA()`中会打开DMA Half Transfer中断。ADC1长度为2时，Half Transfer发生在仅有IPFC写入、VBUS尚未写入的时刻；它不能作为控制入口。两路DMA启动成功后关闭Half Transfer中断：
+
+```c
+__HAL_DMA_DISABLE_IT(hadc1.DMA_Handle, DMA_IT_HT);
+__HAL_DMA_DISABLE_IT(hadc2.DMA_Handle, DMA_IT_HT);
+```
+
+以上语句必须放在CubeMX保留的`USER CODE`区域。不要修改HAL库文件，也不要在CubeMX生成区手工删除中断使能代码。
+
+### 6.5 NVIC与双ADC同步
+
+规则组DMA方案不使用ADC1/2的EOC/JEOC中断作为控制入口，因此`ADC1 and ADC2 global interrupt`默认关闭。启用CubeMX为两路DMA实际分配的DMA通道中断：
+
+| 中断 | 抢占优先级 | 子优先级 | 用途 |
+| --- | ---: | ---: | --- |
+| ADC2 DMA通道全局中断 | 1 | 0 | 发布VAC序列完成标志 |
+| ADC1 DMA通道全局中断 | 2 | 0 | 唯一10 kHz控制入口 |
+
+ADC2只有一次转换，硬件上会早于ADC1的两通道序列完成。再配合ADC2 DMA中断优先级高于ADC1，可在ADC1控制回调运行前先发布VAC序列号。不要仅依据两个DMA缓冲区“看起来都有数据”判断同步；必须用单调递增的序列计数检查本周期VAC是否已经完成。
+
+推荐的软件数据：
+
+```c
+static volatile uint32_t adc2_sequence;
+static uint32_t adc2_sequence_consumed;
+static uint32_t control_heartbeat;
+```
+
+`HAL_ADC_ConvCpltCallback()`按`hadc->Instance`分流：ADC2分支只递增`adc2_sequence`；ADC1分支确认它不同于`adc2_sequence_consumed`，随后锁定本周期三个样本、更新已消费序列号并执行一次控制。ADC1回调之外不得再次运行PR控制器。
+
+若ADC1完成时VAC序列号没有前进、任一路DMA停止、ADC发生Overrun或样本持续异常，应立即拉低PE0、关闭HRTIM输出并锁存故障。快速回调只允许采样快照、物理量换算、范围检查、参考生成、PR计算、调制限幅、HRTIM预装载比较值更新和心跳计数；禁止串口发送和阻塞等待。
+
+### 6.6 校准和启动顺序
+
+必须在HRTIM计数器产生第一个ADC Trigger之前准备好两个DMA通道：
+
+1. 保持PE0为低并保持HRTIM输出关闭；
+2. 确认HRTIM Fault 3未激活；
+3. 对ADC1和ADC2分别执行`HAL_ADCEx_Calibration_Start(..., ADC_SINGLE_ENDED)`；
+4. 清零DMA缓冲区、ADC状态标志、序列计数器和控制心跳；
+5. 先调用`HAL_ADC_Start_DMA(&hadc2, (uint32_t *)adc2_dma, 1)`；
+6. 再调用`HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc1_dma, 2)`；
+7. 确认两个启动调用均返回`HAL_OK`，随后关闭两路DMA Half Transfer中断；
+8. 完成HRTIM DLL校准并写入安全比较值；
+9. 使用同一次掩码启动HRTIM Master、Timer A和Timer B计数器，暂不启动四路输出；
+10. 连续观察ADC1/ADC2序列正常更新若干周期；
+11. 状态机检查通过后才启动HRTIM输出，最后拉高PE0。
+
+HRTIM未运行时，规则组只处于等待外部触发状态，不会因`HAL_ADC_Start_DMA()`自行连续转换。任一ADC/DMA启动失败时不得启动HRTIM计数器、PWM输出或Gate Enable。
 
 ## 7. USART2 与 VOFA
 
@@ -424,11 +493,14 @@ LSI误差较大，上板必须测量实际超时。IWDG应在其他外设和状�
 | CubeMX中断 | 抢占优先级 | 子优先级 | 用途 |
 | --- | ---: | ---: | --- |
 | HRTIM1 fault global interrupt | 0 | 0 | 记录FLT3并拉低PE0 |
-| ADC1 and ADC2 global interrupt | 1 | 0 | 10 kHz快速控制入口 |
-| EXTI line[9:5] interrupt | 2 | 0 | PE5诊断故障 |
+| ADC2 DMA通道全局中断 | 1 | 0 | VAC规则序列完成标志 |
+| ADC1 DMA通道全局中断 | 2 | 0 | 唯一10 kHz快速控制入口 |
+| EXTI line[9:5] interrupt | 3 | 0 | PE5诊断故障 |
 | SysTick | 15 | 0 | 只更新时间标志 |
 
 Fault的PWM关断由HRTIM硬件完成，不依赖`HRTIM1_FLT_IRQn`是否及时响应。ISR只负责软件收尾和记录。
+
+DMA中断名称取决于CubeMX实际分配结果，例如`DMA1 channel x global interrupt`。不要为了匹配本文示例而强行选择已经与其他外设冲突的DMA通道。`ADC1 and ADC2 global interrupt`在本方案中保持关闭，ADC错误由DMA回调、状态寄存器检查和100 ms安全监督共同检测。
 
 首版不配置普通TIM。1 ms、10 ms和100 ms任务由SysTick产生标志，实际任务在主循环执行。
 
@@ -445,10 +517,15 @@ Fault的PWM关断由HRTIM硬件完成，不依赖`HRTIM1_FLT_IRQn`是否及时�
 | 四路输出 | 四次`HAL_HRTIM_WaveformOutputConfig()` |
 | ADC Trigger 1 | `HAL_HRTIM_ADCTriggerConfig()`，Master CMP2 |
 | Fault Line 3 | `HAL_HRTIM_FaultConfig()`和`HAL_HRTIM_FaultModeCtl()` |
-| ADC1/2注入组 | 两次`HAL_ADCEx_InjectedConfigChannel()` |
+| ADC1规则组Rank 1/2 | 两次`HAL_ADC_ConfigChannel()`，分别为IN2和IN7 |
+| ADC2规则组Rank 1 | 一次`HAL_ADC_ConfigChannel()`，通道为IN6 |
+| ADC1/2规则组外部触发 | `ADC_EXTERNALTRIG_HRTIM_TRG1`和上升沿触发 |
+| ADC1/2循环DMA | 两个独立DMA句柄、`DMA_CIRCULAR`和Half Word数据宽度 |
 | ADC12异步/4 | `ADC_CLOCK_ASYNC_DIV4` |
 
 若CubeMX生成结果与表中不一致，先回到`.ioc`修正，避免直接编辑生成区掩盖配置错误。
+
+还必须核对：生成结果中不再出现本方案ADC通道对应的`HAL_ADCEx_InjectedConfigChannel()`；ADC1的`NbrOfConversion`为2，ADC2为1；两个ADC均通过`__HAL_LINKDMA()`链接各自DMA句柄。应用启动代码中的两个`HAL_ADC_Start_DMA()`必须早于HRTIM Counter Start。
 
 ## 11. 配置顺序
 
@@ -458,12 +535,13 @@ Fault的PWM关断由HRTIM硬件完成，不依赖`HRTIM1_FLT_IRQn`是否及时�
 4. 配置HRTIM Master、Timer A/B、Compare、Output、ROM和Dead Time；
 5. 配置Fault Line 3及HRTIM Fault中断；
 6. 配置Master CMP2和ADC Trigger 1；
-7. 配置ADC1/ADC2注入组、ADC1规则组和ADC1_2 NVIC；
-8. 配置USART2；
-9. 配置IWDG和调试冻结；
-10. 检查Pinout冲突、Clock Configuration和NVIC；
-11. 生成代码并按第10节逐项核对；
-12. 完成无功率测试后才进入低压功率测试。
+7. 配置ADC1/ADC2规则组，二者均选择HRTIM1 ADC Trigger 1上升沿触发；
+8. 分别添加ADC1和ADC2循环DMA，设置Half Word宽度和DMA中断优先级；
+9. 配置USART2；
+10. 配置IWDG和调试冻结；
+11. 检查Pinout冲突、Clock Configuration、DMA和NVIC；
+12. 生成代码并按第10节逐项核对；
+13. 完成无功率测试后才进入低压功率测试。
 
 ## 12. 验收清单
 
@@ -480,8 +558,13 @@ Fault的PWM关断由HRTIM硬件完成，不依赖`HRTIM1_FLT_IRQn`是否及时�
 - [ ] ADC Trigger 1来源为Master Compare 2，Postscaler 0。
 - [ ] PB10为Fault Line 3 Digital Input、Active Low、Filter None。
 - [ ] Timer A/B均启用Fault 3，四路Fault Level为Inactive。
-- [ ] ADC1 PA1和ADC2 PC0均为注入Rank 1、24.5 cycles、HRTIM触发。
-- [ ] ADC1 PC1为规则Rank 1、Software Start、无DMA。
+- [ ] ADC1规则组Rank 1为PA1/IPFC，Rank 2为PC1/VBUS，均为24.5 cycles。
+- [ ] ADC2规则组Rank 1为PC0/VAC，采样时间为24.5 cycles。
+- [ ] ADC1和ADC2规则组均使用HRTIM1 ADC Trigger 1上升沿触发。
+- [ ] ADC1转换数为2且Scan Enable；ADC2转换数为1。
+- [ ] 两个ADC均为Circular DMA、Half Word、Memory Increment Enable。
+- [ ] ADC2 DMA中断优先级1，ADC1 DMA中断优先级2，ADC1_2全局中断关闭。
+- [ ] Master、Timer A/B、ADC Trigger 1、Dead Time和Fault 3配置未因ADC改造发生变化。
 - [ ] USART2为PD5/PD6、460800、8N1、无DMA和NVIC。
 - [ ] COMP、ADC3/4/5、HRTIM C/D/E/F和普通TIM保持关闭。
 - [ ] Pinout无黄色冲突。
@@ -492,18 +575,23 @@ Fault的PWM关断由HRTIM硬件完成，不依赖`HRTIM1_FLT_IRQn`是否及时�
 2. PWM实测为10 kHz，Master和A/B物理周期均为100 us；
 3. A/B桥臂互补，死区初值约500 ns，无上下管重叠；
 4. 25%、50%、75%测试值的实测占空方向与比较值公式一致；
-5. ADC Trigger和快速回调均为10 kHz，每周期只执行一次控制；
-6. ADC采样位置远离实际开关沿；
-7. PB10拉低时不依赖CPU立即关闭四路PWM；
-8. PB10恢复后PWM不自动恢复；
-9. 停止控制心跳后IWDG在实测LSI误差范围内复位；
-10. IWDG复位后PE0和PWM仍保持关闭。
+5. ADC Trigger和ADC1 DMA完成回调均为10 kHz，每周期只执行一次控制；
+6. ADC1缓冲区顺序始终为IPFC、VBUS，ADC2缓冲区为VAC；
+7. IPFC和VAC属于同一PWM周期，连续运行时无跨周期混用；
+8. VBUS以10 kHz采样，但母线外环仍严格按1 kHz执行；
+9. ADC采样位置远离实际开关沿；
+10. 人为停止任一路DMA后，软件检测失步、拉低PE0并锁存故障；
+11. PB10拉低时不依赖CPU立即关闭四路PWM；
+12. PB10恢复后PWM不自动恢复；
+13. 停止控制心跳后IWDG在实测LSI误差范围内复位；
+14. IWDG复位后PE0和PWM仍保持关闭。
 
 ## 13. 首版边界
 
 - PWM和控制频率均为10 kHz，每周期运行一次PR。
-- ADC1/ADC2使用独立注入组，不启用ADC双重模式。
-- VBUS使用ADC1规则组软件启动，不启用TIM6或DMA。
+- ADC1/ADC2使用独立规则组和两个独立循环DMA通道，不启用注入组或ADC双重模式。
+- IPFC、VBUS和VAC均由现有HRTIM1 ADC Trigger 1以10 kHz触发，不增加TIM6。
+- ADC1 DMA完成回调是唯一快速控制入口，ADC2 DMA完成回调只发布VAC序列号。
 - USART2使用阻塞发送，不启用UART DMA或中断。
 - COMP不作为首版启动依赖，但DESAT/OCP和HRTIM Fault 3不可省略。
 - 500 ns死区、24.5 cycles采样时间和Master CMP2采样位置都必须通过实际硬件测量修正。
