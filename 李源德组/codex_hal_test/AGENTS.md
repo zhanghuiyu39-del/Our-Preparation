@@ -56,6 +56,20 @@
 - 调制度、中点、ARR 对应查表值等关系直接写入算式，依赖具体定时器参数，抽象程度较低。
 - 会在代码注释中记录调制度上限、波形失真和 THD 等与实际控制效果相关的信息。
 
+## HRTIM 熟悉程度与协作方式
+
+- 根据 `Xiaosai3.0.ioc`，用户对 STM32G4 HRTIM 处于 **基础到中等应用熟悉度**：已经能在 CubeMX 中独立建立单个 HRTIM 子定时器的双路 PWM，但尚无充分证据表明已经掌握数字电源所需的完整同步、采样触发和硬件保护链路。
+- 用户能够把 HRTIM Timer B 的 TB1/TB2 映射到 PA10/PA11，说明已理解 HRTIM 子定时器、输出通道和物理引脚复用之间的基本对应关系。
+- 用户已配置上下计数模式、周期 `60000`、比较值 `30000`、`MUL16` 时基、比较单元 1 和输出预装载，说明能够使用 CubeMX 形成中心对称 PWM 的基础时基与占空比关系。
+- 用户已启用 TB1/TB2 死区插入，并为上升沿、下降沿分别填写 `100`，说明知道互补功率桥需要死区，也能找到 CubeMX 中对应配置入口；当前文件不能证明其已经完成死区时钟换算或根据驱动器、功率器件实测确定最终死区。
+- 用户已选择重复周期更新和 Timer B Repetition Interrupt，并启用 HRTIM1_TIMB NVIC，说明理解预装载参数需要在确定的周期边界生效，也知道可使用 HRTIM 周期事件形成软件控制节拍。
+- 当前配置只使用 Timer B，没有体现 Master Timer、Timer A/C/D/E/F、多子定时器同步或跨桥臂原子更新，因此后续涉及单相全桥 A/B 或三相多桥臂时，应明确解释 Master 周期、Reset/Update Source 和同步更新关系。
+- `ADCTrigger_Id1=__NULL`，当前没有配置 HRTIM 触发 ADC。后续指导同步采样时，需要从“选择哪个 HRTIM 比较/周期事件作为 ADC Trigger、为什么该位置是 PWM 安静窗口、如何确认每周期只执行一次控制”开始讲解，不能假设用户已经熟悉 HRTIM-ADC 触发矩阵。
+- 当前配置没有体现 HRTIM Fault 输入、Fault 极性、滤波、锁存或输出故障态。后续功率项目必须完整说明外部驱动器 `nFAULT/DESAT/OCP -> HRTIM Fault -> PWM 无效态` 的硬件路径，并区分硬件即时关断与 Fault ISR 的软件记录职责。
+- 当前 TB1 的 Set Source 使用 Compare 1，而 Reset Source 为 None，输出行为还需结合 Output ROM、互补输出和实测波形核对。后续分析 `.ioc` 时应检查 Set/Reset 事件是否闭合、TB1/TB2 是否真正互补、周期边界是否会恢复到预期状态，不能只根据“已启用两个输出”判断波形正确。
+- 后续与用户讨论 HRTIM 时，可以直接使用 Period、Compare、Preload、Dead Time、Repetition、Set/Reset Source 等 CubeMX 术语，不必从普通 GPIO 或基本 PWM 概念讲起；但对 HRTIM 高分辨率时钟倍率、上下计数频率公式、Master/子定时器同步、ADC Trigger、Fault 锁存和输出状态表应给出计算过程与示波器验收方法。
+- 对用户 HRTIM 能力的描述应以实际 `.ioc`、生成的 `MX_HRTIM1_Init()` 和示波器结果为证据。未配置的功能只能写成“尚无充分证据”或“需要补充”，不能直接推断用户不会使用。
+
 ## ADC、DMA 与测量代码习惯
 
 - 使用全局 AD_Value[2] 作为 ADC DMA 目标，按固定下标区分电压和电流通道。
