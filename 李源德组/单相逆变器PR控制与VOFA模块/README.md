@@ -1,9 +1,14 @@
-# 单相逆变器 PR 双环与 VOFA 模块
+# 单相 PWM 整流与三相逆变 PR、VOFA 模块
 
-本目录面向 `STM32G474VCT6 + STM32CubeMX/HAL`，包含四个部分：
+> **新项目推荐使用 [easy_port](easy_port/README.md)。**
+> 它只包含 `PR_Init/PR_Reset/PR_Calc` 和主循环阻塞式 `VOFA_Send`，适合单相 PWM 整流器加三相逆变器，不使用 DMA 或 SOGI-PLL。
+> 下方 `portable/` 与 `stm32g4_hal/` 保留为高级模块化参考，不是当前推荐移植入口。
+
+本目录面向 `STM32G474VCT6 + STM32CubeMX/HAL`，包含以下部分：
 
 ```text
 reference_original/       原始 control.c/.h、vofa.c/.h 的只读备份
+easy_port/                推荐：带中文注释的简化 PR 与阻塞式 VOFA
 portable/Inc              与 MCU 无关的 PR 和双环控制头文件
 portable/Src              与 MCU 无关的 PR 和双环控制实现
 stm32g4_hal/Inc           STM32G4 HAL 的 TIM PWM、UART DMA 适配头文件
