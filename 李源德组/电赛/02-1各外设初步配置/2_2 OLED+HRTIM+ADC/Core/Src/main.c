@@ -26,9 +26,10 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "SPWM.h"  /* HRTIM单相全桥单极性倍频SPWM模块。 */
 #include "OLED.h"
-#include <stdio.h>
+#include "pfc_measure.h"
+#include "pfc_hrtim.h"
+#include "iwdg.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -50,12 +51,6 @@
 
 /* USER CODE BEGIN PV */
 
-/* ADC1循环DMA缓冲区：下标0为IPFC，下标1为VBUS。 */
-static volatile uint16_t adc1_dma_buffer[2] = {0U, 0U};
-
-/* ADC2循环DMA缓冲区：下标0为VAC。 */
-static volatile uint16_t adc2_dma_buffer[1] = {0U};
-
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -66,25 +61,6 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
-/* 四路HRTIM输出掩码，统一用于启动和发生错误时关闭输出。 */
-#define SPWM_TEST_OUTPUTS (HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2 | \
-                           HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2)
-
-/* Master、Timer A和Timer B必须用同一个掩码同步启动。 */
-#define SPWM_TEST_TIMERS  (HRTIM_TIMERID_MASTER | HRTIM_TIMERID_TIMER_A | \
-                           HRTIM_TIMERID_TIMER_B)
-
-/*
- * 无功率测试启动失败时执行统一安全收尾。
- * 本函数始终先拉低门极使能，再请求关闭全部HRTIM输出。
- */
-static void SPWM_TestFailSafe(void)
-{
-  HAL_GPIO_WritePin(PFC_GATE_EN_GPIO_Port, PFC_GATE_EN_Pin, GPIO_PIN_RESET); /* 禁止外部门极驱动。 */
-  (void)HAL_HRTIM_WaveformOutputStop(&hhrtim1, SPWM_TEST_OUTPUTS);            /* 关闭四路MCU PWM输出。 */
-  Error_Handler();                                                           /* 停止程序并等待调试。 */
-}
 
 /* USER CODE END 0 */
 
@@ -125,85 +101,174 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
 
-
+	/*
+	 * 上电后先等待OLED内部电源和电荷泵稳定。该延时只在初始化阶段执行，
+	 * 不能放入主循环或快速采样回调，否则会阻塞后台任务或控制节拍。
+	 */
 	HAL_Delay(100);
 	OLED_Init();
-	//此处用来放需要显示的名称
-//	OLED_ShowNum(1,7,1234,4);
-//	OLED_ShowNum(4,7,1234,4);
+
+	/* 初始化测量模块的软件状态、DMA样本快照、序列号和故障标志。 */
+	PFC_Measure_Init();
+
+	/*
+	 * 固定标签只写一次，避免软件I2C在主循环中重复传输不变内容：
+	 * I：IPFC输入电感电流；V：VAC交流输入电压；
+	 * D：VBUS直流母线电压；S：快速采样心跳，行末显示故障位。
+	 * 各测量行左侧为ADC原始码，右侧为换算后的工程量。
+	 */
+	OLED_ShowString(1, 1, "I:");
+	OLED_ShowString(2, 1, "V:");
+	OLED_ShowString(3, 1, "D:");
+	OLED_ShowString(4, 1, "S:");
 
 
-  /* 无功率示波器测试期间始终保持外部门极驱动关闭。 */
+  /*
+   * 无功率采样阶段只验证HRTIM触发、ADC和DMA链路。
+   * PE0保持低电平，防止仅启动HRTIM计数器时误使能外部门极驱动器。
+   */
   HAL_GPIO_WritePin(PFC_GATE_EN_GPIO_Port, PFC_GATE_EN_Pin, GPIO_PIN_RESET);
 
-  /* 先校准单通道VAC使用的ADC2；校准期间HRTIM尚未启动。 */
+  /* ADC校准必须在启动规则组DMA之前完成，此时HRTIM尚未产生ADC触发。 */
   if (HAL_ADCEx_Calibration_Start(&hadc2, ADC_SINGLE_ENDED) != HAL_OK)
   {
-    SPWM_TestFailSafe(); /* ADC2校准失败时禁止继续启动PWM资源。 */
+    PFC_Measure_Trip(PFC_FAULT_ADC_ERROR);
+    Error_Handler();
   }
 
   /* 再校准IPFC和VBUS使用的ADC1。 */
   if (HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED) != HAL_OK)
   {
-    SPWM_TestFailSafe(); /* ADC1校准失败时禁止继续启动PWM资源。 */
+    PFC_Measure_Trip(PFC_FAULT_ADC_ERROR);
+    Error_Handler();
   }
 
-  /* 先让ADC2进入等待HRTIM触发状态，保证VAC序列先完成。 */
-  if (HAL_ADC_Start_DMA(&hadc2, (uint32_t *)adc2_dma_buffer, 1U) != HAL_OK)
+  /*
+   * ADC2规则组只有VAC一个Rank。先启动ADC2 DMA，使其提前进入等待
+   * HRTIM_TRG1的状态；之后每次触发完成都更新VAC及adc2_sequence。
+   */
+  if (HAL_ADC_Start_DMA(&hadc2, (uint32_t *)PFC_Adc2Dma, 1U) != HAL_OK)
   {
-    SPWM_TestFailSafe(); /* ADC2 DMA启动失败时保持安全态。 */
+    PFC_Measure_Trip(PFC_FAULT_ADC_ERROR);
+    Error_Handler();
   }
 
-  /* 再让ADC1进入等待HRTIM触发状态；ADC1完成回调是唯一SPWM更新入口。 */
-  if (HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc1_dma_buffer, 2U) != HAL_OK)
+  /*
+   * ADC1规则组依次采集IPFC和VBUS，DMA长度2必须与Rank数量一致。
+   * ADC1完成回调在两个Rank均搬运结束后发生，并作为唯一10 kHz快速入口；
+   * ADC2回调只发布VAC序列，不能再次执行同一周期的控制或测量处理。
+   */
+  if (HAL_ADC_Start_DMA(&hadc1, (uint32_t *)PFC_Adc1Dma, 2U) != HAL_OK)
   {
-    SPWM_TestFailSafe(); /* ADC1 DMA启动失败时保持安全态。 */
+    PFC_Measure_Trip(PFC_FAULT_ADC_ERROR);
+    Error_Handler();
   }
 
-  /* 首版控制只使用完整转换回调，关闭HAL默认打开的DMA半传输中断。 */
+  /*
+   * 循环DMA默认会产生Half Transfer和Transfer Complete两类中断。
+   * 本工程只在一整个规则序列完成后处理样本，因此关闭HT中断，
+   * 避免ADC1 Rank 1完成时提前读取尚未更新的VBUS并重复进入回调。
+   */
   __HAL_DMA_DISABLE_IT(hadc2.DMA_Handle, DMA_IT_HT);
   __HAL_DMA_DISABLE_IT(hadc1.DMA_Handle, DMA_IT_HT);
 
-  /* 使用10%调制度初始化50 Hz开环正弦，初始比较值保持两个桥臂均为50%。 */
-  SPWM_Init(0.10f);
-
-  /* 同步启动Master、Timer A和Timer B，使两桥臂与ADC触发保持同一时基。 */
-  if (HAL_HRTIM_WaveformCounterStart(&hhrtim1, SPWM_TEST_TIMERS) != HAL_OK)
+  /*
+   * 启动Master、Timer A/B计数器以产生10 kHz ADC Trigger。
+   * 此函数只建立采样时基，不开放TA1/TA2/TB1/TB2输出，也不拉高PE0。
+   */
+  if (PFC_HRTIM_StartSampling() != HAL_OK)
   {
-    SPWM_TestFailSafe(); /* 任一计数器启动失败时关闭全部输出。 */
+    PFC_Measure_Trip(PFC_FAULT_HRTIM);
+    Error_Handler();
   }
 
-  /* 只开放MCU的四路HRTIM引脚供示波器观察，PE0仍保持低电平。 */
-  if (HAL_HRTIM_WaveformOutputStart(&hhrtim1, SPWM_TEST_OUTPUTS) != HAL_OK)
-  {
-    SPWM_TestFailSafe(); /* 四路输出未完整启动时立即回到安全态。 */
-  }
-
+  /*
+   * IWDG放在可能耗时或失败的初始化之后启动。启动后不能关闭，只有在
+   * ADC序列、测量快照和故障状态均正常时才刷新，异常时允许其复位系统。
+   */
   MX_IWDG_Init();
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  uint32_t oled_tick = 0;
+  
+  /* OLED属于低速后台任务，不参与10 kHz采样回调。 */
+  uint32_t oled_tick = HAL_GetTick();
+
+  /* 保存上一次监督时刻的序列号，用来判断两路DMA是否仍在持续更新。 */
+  uint32_t last_adc1_sequence = 0U;
+  uint32_t last_adc2_sequence = 0U;
   while (1)
   {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
 	  
-	  //此处用来显示需要实时刷新的数据   eg：ADC
+	/*
+	 * 每100 ms执行一次低速显示和安全监督。这里使用无阻塞的Tick差值，
+	 * 而不是HAL_Delay()，以便主循环后续继续加入状态机和通信任务。
+	 */
 	if ((HAL_GetTick() - oled_tick) >= 100U)
     {
-        oled_tick = HAL_GetTick();
-//		OLED_ShowNum(1, 7, adc_value, 4);
-        OLED_ShowString(2, 1, "OLED OK");
+		/* 记录本次实际执行时刻；OLED写屏超时后不连续追赶历史周期。 */
+		oled_tick = HAL_GetTick();
+        PFC_Measurement measurement;
+        int32_t ipfc_ma;
+        int32_t vac_cv;
+        uint32_t vbus_cv;
+
+        /*
+         * 主循环不直接读取正在被DMA改写的PFC_Adc1Dma/PFC_Adc2Dma。
+         * 通过测量模块取得同一发布时刻的完整快照，避免显示半更新数据。
+         */
+        PFC_Measure_GetSnapshot(&measurement);
+
+        /*
+         * 屏幕显示使用整数，避免在软件I2C显示函数中处理浮点格式化：
+         * ipfc_ma单位为mA，vac_cv和vbus_cv单位均为0.01 V。
+         */
+        ipfc_ma = (int32_t)(measurement.ipfc * 1000.0f);
+        vac_cv = (int32_t)(measurement.vac * 100.0f);
+        vbus_cv = (uint32_t)(measurement.vbus * 100.0f);
+
+        /* 固定标签已在初始化阶段写入，此处只更新会变化的数字区域。 */
+        OLED_ShowNum(1, 3, measurement.ipfc_raw, 4);
+        OLED_ShowSignedNum(1, 8, ipfc_ma, 5);
+
+        OLED_ShowNum(2, 3, measurement.vac_raw, 4);
+        OLED_ShowSignedNum(2, 8, vac_cv, 5);
+
+        OLED_ShowNum(3, 3, measurement.vbus_raw, 4);
+        OLED_ShowNum(3, 8, vbus_cv, 5);
+
+        OLED_ShowNum(4, 3, measurement.fast_heartbeat % 100000U, 5);
+        OLED_ShowHexNum(4, 10, measurement.fault_bits, 2);
+
+        /*
+         * 两个序列号在相邻监督周期之间都必须前进。任一路停滞说明ADC、
+         * DMA或HRTIM触发链路异常，锁存同步故障并由测量模块执行安全停机。
+         */
+        if ((measurement.adc1_sequence == last_adc1_sequence) ||
+            (measurement.adc2_sequence == last_adc2_sequence))
+        {
+            PFC_Measure_Trip(PFC_FAULT_ADC_SYNC);
+        }
+        else if ((measurement.valid != 0U) &&
+                 (measurement.fault_bits == PFC_FAULT_NONE))
+        {
+            /* 仅健康状态喂狗；不要在中断中或无条件刷新IWDG。 */
+            (void)HAL_IWDG_Refresh(&hiwdg);
+        }
+
+        /* 保存本次序列号，供下一个100 ms监督周期比较。 */
+        last_adc1_sequence = measurement.adc1_sequence;
+        last_adc2_sequence = measurement.adc2_sequence;
 
     }
 
 	  
 	  
-    (void)HAL_IWDG_Refresh(&hiwdg); /* 无功率试波阶段持续喂狗，避免约500 ms后复位。 */
-
   }
   /* USER CODE END 3 */
 }
@@ -256,16 +321,62 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 
-/*
- * 两路ADC都由HRTIM Master CMP2以10 kHz触发。
- * 只有ADC1完整序列完成时推进一次SPWM，ADC2完成回调不执行调制更新。
+/**
+ * @brief ADC规则组DMA完整传输回调。
+ * @param hadc 发生完整转换事件的ADC句柄。
+ *
+ * 两路ADC均由HRTIM Master CMP2通过HRTIM_TRG1以10 kHz触发。
+ * ADC2先完成单通道VAC采样并发布序列号；ADC1完成IPFC、VBUS两个Rank后，
+ * 检查ADC2的新样本并形成一次同步测量快照。控制算法后续也应只从ADC1
+ * 分支进入，避免一个PWM周期执行两次。
+ *
+ * 该函数运行在DMA中断上下文，禁止调用OLED、阻塞式USART或HAL_Delay()。
  */
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
-  if ((hadc != NULL) && (hadc->Instance == ADC1)) /* 确认本次是ADC1两通道序列完成。 */
+  if ((hadc != NULL) && (hadc->Instance == ADC2))
   {
-    SPWM_OpenLoopStep(); /* 每100 us推进两个查表索引，得到50 Hz正弦包络。 */
+    PFC_Measure_OnAdc2Complete();
   }
+  else if ((hadc != NULL) && (hadc->Instance == ADC1))
+  {
+    PFC_Measure_OnAdc1Complete();
+  }
+}
+
+void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc)
+{
+  /*
+   * ADC发生Overrun、DMA或内部状态错误时进入。当前不区分具体ADC，
+   * 统一交给测量模块锁存ADC故障；功率控制中不能尝试自动恢复输出。
+   */
+  (void)hadc;
+  PFC_Measure_AdcError();
+}
+
+/**
+ * @brief GPIO外部中断公共回调。
+ * @param GPIO_Pin 触发EXTI的GPIO引脚掩码。
+ *
+ * PE5是驱动器nFAULT诊断信号。该回调用于记录和锁存故障；真正的快速
+ * 关断应由驱动器DESAT/OCP到HRTIM Fault 3的硬件链路完成，不依赖CPU。
+ */
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+  if (GPIO_Pin == PFC_NFAULT_DIAG_Pin)
+  {
+    PFC_Measure_Trip(PFC_FAULT_DRIVER);
+  }
+}
+
+void HAL_HRTIM_Fault3Callback(HRTIM_HandleTypeDef *hhrtim)
+{
+  /*
+   * Fault 3硬件逻辑已先把HRTIM输出置为Inactive；ISR随后记录故障状态，
+   * 供主循环显示和状态机处理。清除中断标志不代表允许自动恢复PWM。
+   */
+  (void)hhrtim;
+  PFC_Measure_Trip(PFC_FAULT_HRTIM);
 }
 
 /* USER CODE END 4 */
@@ -277,7 +388,12 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
+  /*
+   * 不可恢复的初始化或HAL错误统一进入安全态：先关闭全部HRTIM计数和
+   * 输出，再禁止中断并停留；若IWDG已经启动，最终由IWDG复位系统。
+   * 板级Gate Enable还应保持默认低。
+   */
+  PFC_HRTIM_StopAll();
   __disable_irq();
   while (1)
   {

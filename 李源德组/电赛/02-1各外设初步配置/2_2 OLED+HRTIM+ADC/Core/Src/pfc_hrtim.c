@@ -9,17 +9,25 @@
                             HRTIM_TIMERID_TIMER_B)
 
 /* 只启动计数器，为 ADC Trigger 1 提供 10 kHz 时基，不启动四路 PWM 引脚输出。 */
-void PFC_HRTIM_StartSampling(void)
+HAL_StatusTypeDef PFC_HRTIM_StartSampling(void)
 {
-    (void)HAL_HRTIM_WaveformCounterStart(&hhrtim1, PFC_HRTIM_TIMERS);
+    if (hhrtim1.Instance == HRTIM1)
+    {
+        return HAL_HRTIM_WaveformCounterStart(&hhrtim1, PFC_HRTIM_TIMERS);
+    }
+
+    return HAL_ERROR;
 }
 
 /* 故障和异常统一从这里收尾：先关驱动，再关 PWM 输出和时基。 */
 void PFC_HRTIM_StopAll(void)
 {
     HAL_GPIO_WritePin(PFC_GATE_EN_GPIO_Port, PFC_GATE_EN_Pin, GPIO_PIN_RESET);
-    (void)HAL_HRTIM_WaveformOutputStop(&hhrtim1, PFC_HRTIM_OUTPUTS);
-    (void)HAL_HRTIM_WaveformCounterStop(&hhrtim1, PFC_HRTIM_TIMERS);
+    if (hhrtim1.Instance == HRTIM1)
+    {
+        (void)HAL_HRTIM_WaveformOutputStop(&hhrtim1, PFC_HRTIM_OUTPUTS);
+        (void)HAL_HRTIM_WaveformCounterStop(&hhrtim1, PFC_HRTIM_TIMERS);
+    }
 }
 
 /* 后续 PR 电流环只更新预装载 CMP1；本采样验证阶段不调用此函数。 */

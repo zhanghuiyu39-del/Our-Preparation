@@ -35,8 +35,8 @@ void OLED_W_SDA(GPIO_PinState x)
 void OLED_I2C_Init(void)
 {
 	
-	OLED_W_SCL(1);
-	OLED_W_SDA(1);
+	OLED_W_SCL(GPIO_PIN_SET);
+	OLED_W_SDA(GPIO_PIN_SET);
 }
 
 /**
@@ -46,10 +46,10 @@ void OLED_I2C_Init(void)
   */
 void OLED_I2C_Start(void)
 {
-	OLED_W_SDA(1);
-	OLED_W_SCL(1);
-	OLED_W_SDA(0);
-	OLED_W_SCL(0);
+	OLED_W_SDA(GPIO_PIN_SET);
+	OLED_W_SCL(GPIO_PIN_SET);
+	OLED_W_SDA(GPIO_PIN_RESET);
+	OLED_W_SCL(GPIO_PIN_RESET);
 
 }
 
@@ -60,9 +60,9 @@ void OLED_I2C_Start(void)
   */
 void OLED_I2C_Stop(void)
 {
-	OLED_W_SDA(0);
-	OLED_W_SCL(1);
-	OLED_W_SDA(1);
+	OLED_W_SDA(GPIO_PIN_RESET);
+	OLED_W_SCL(GPIO_PIN_SET);
+	OLED_W_SDA(GPIO_PIN_SET);
 	
 }
 
@@ -76,12 +76,12 @@ void OLED_I2C_SendByte(uint8_t Byte)
 	uint8_t i;
 	for (i = 0; i < 8; i++)
 	{
-		OLED_W_SDA(Byte & (0x80 >> i));
-		OLED_W_SCL(1);
-		OLED_W_SCL(0);
+		OLED_W_SDA((Byte & (0x80U >> i)) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+		OLED_W_SCL(GPIO_PIN_SET);
+		OLED_W_SCL(GPIO_PIN_RESET);
 	}
-	OLED_W_SCL(1);	//额外的一个时钟，不处理应答信号
-	OLED_W_SCL(0);
+	OLED_W_SCL(GPIO_PIN_SET);	//额外的一个时钟，不处理应答信号
+	OLED_W_SCL(GPIO_PIN_RESET);
 }
 
 /**
