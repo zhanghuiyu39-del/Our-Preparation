@@ -1,0 +1,27 @@
+*** Using Compiler 'V5.06 update 6 (build 750)', folder: 'D:\DPJ\keil 5\ARM\ARMCC\Bin'
+Build target 'PFC'
+compiling spwm.c...
+..\HARDWARE\SPWM\spwm.c(85): warning:  #1035-D: single-precision operand implicitly converted to double-precision
+          vacs = (vac * uref - 1.625) * 31.2 * 0.1 + 0.9 * vacs;
+..\HARDWARE\SPWM\spwm.c(85): warning:  #1035-D: single-precision operand implicitly converted to double-precision
+          vacs = (vac * uref - 1.625) * 31.2 * 0.1 + 0.9 * vacs;
+..\HARDWARE\SPWM\spwm.c(86): warning:  #1035-D: single-precision operand implicitly converted to double-precision
+          iacs = (iac * uref - 1.63) * 4 * 0.1 + 0.9 * iacs;
+..\HARDWARE\SPWM\spwm.c(86): warning:  #1035-D: single-precision operand implicitly converted to double-precision
+          iacs = (iac * uref - 1.63) * 4 * 0.1 + 0.9 * iacs;
+..\HARDWARE\SPWM\spwm.c(87): warning:  #1035-D: single-precision operand implicitly converted to double-precision
+          vrms = vrm * uref * 10.53 * 0.1 + 0.9 * vrms;
+..\HARDWARE\SPWM\spwm.c(87): warning:  #1035-D: single-precision operand implicitly converted to double-precision
+          vrms = vrm * uref * 10.53 * 0.1 + 0.9 * vrms;
+..\HARDWARE\SPWM\spwm.c: 6 warnings, 0 errors
+compiling main.c...
+main.c(42): warning:  #1035-D: single-precision operand implicitly converted to double-precision
+      sogi_pll_init(&spll_data, 50 * value_2pi, 0.00005f); // 锁相环初始化
+main.c(67): warning:  #1-D: last line of file ends without a newline
+  }
+main.c: 2 warnings, 0 errors
+linking...
+Program Size: Code=24582 RO-data=4582 RW-data=700 ZI-data=2300  
+FromELF: creating hex file...
+"..\OBJ\PFC.axf" - 0 Error(s), 8 Warning(s).
+Build Time Elapsed:  00:00:02

@@ -1,0 +1,20 @@
+{
+    "files.associations": {
+        "vofa.h": "c",
+        "menu.h": "c",
+        "oled.h": "c",
+        "key.h": "c",
+        "sys.h": "c",
+        "transformation.h": "c",
+        "pfc.h": "c",
+        "led.h": "c",
+        "spwm.h": "c",
+        "arm_math.h": "c",
+        "pid.h": "c",
+        "delay.h": "c",
+        "usart.h": "c",
+        "timer.h": "c",
+        "math.h": "c",
+        "adc.h": "c"
+    }
+}
