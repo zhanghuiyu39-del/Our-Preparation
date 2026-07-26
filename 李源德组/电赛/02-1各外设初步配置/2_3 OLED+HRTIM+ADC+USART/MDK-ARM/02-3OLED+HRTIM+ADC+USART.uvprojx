@@ -7,7 +7,7 @@
 
   <Targets>
     <Target>
-      <TargetName>02-2OLED+HRTIM+ADC</TargetName>
+      <TargetName>02-3OLED+HRTIM+ADC+USART</TargetName>
       <ToolsetNumber>0x4</ToolsetNumber>
       <ToolsetName>ARM-ADS</ToolsetName>
       <pCCUsed>5060528::V5.06 update 5 (build 528)::ARMCC</pCCUsed>
@@ -18,7 +18,7 @@
           <Vendor>STMicroelectronics</Vendor>
           <PackID>Keil.STM32G4xx_DFP.1.4.0</PackID>
           <PackURL>http://www.keil.com/pack/</PackURL>
-          <Cpu>IRAM(0x20000000-0x2001FFFF) IROM(0x8000000-0x803FFFF)  CLOCK(8000000) FPU2 CPUTYPE("Cortex-M4") TZ</Cpu>
+          <Cpu>IRAM(0x20000000-0x2001FFFF) IROM(0x8000000-0x803FFFF) CLOCK(8000000) FPU2 CPUTYPE("Cortex-M4") TZ</Cpu>
           <FlashUtilSpec></FlashUtilSpec>
           <StartupFile></StartupFile>
           <FlashDriverDll></FlashDriverDll>
@@ -48,8 +48,8 @@
             <NotGenerated>0</NotGenerated>
             <InvalidFlash>1</InvalidFlash>
           </TargetStatus>
-          <OutputDirectory>02-2OLED+HRTIM+ADC\</OutputDirectory>
-          <OutputName>02-2OLED+HRTIM+ADC</OutputName>
+          <OutputDirectory>02-3OLED+HRTIM+ADC+USART\</OutputDirectory>
+          <OutputName>02-3OLED+HRTIM+ADC+USART</OutputName>
           <CreateExecutable>1</CreateExecutable>
           <CreateLib>0</CreateLib>
           <CreateHexFile>1</CreateHexFile>
@@ -138,7 +138,7 @@
           </Flash1>
           <bUseTDR>1</bUseTDR>
           <Flash2>BIN\UL2V8M.DLL</Flash2>
-          <Flash3></Flash3>
+          <Flash3>"" ()</Flash3>
           <Flash4></Flash4>
           <pFcarmOut></pFcarmOut>
           <pFcarmGrp></pFcarmGrp>
@@ -391,26 +391,6 @@
           <GroupName>Application/User/Core</GroupName>
           <Files>
             <File>
-              <FileName>OLED.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../Core/Src/OLED.c</FilePath>
-            </File>
-            <File>
-              <FileName>pfc_measure.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../Core/Src/pfc_measure.c</FilePath>
-            </File>
-            <File>
-              <FileName>pfc_hrtim.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../Core/Src/pfc_hrtim.c</FilePath>
-            </File>
-            <File>
-              <FileName>vofa.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../Core/Src/vofa.c</FilePath>
-            </File>
-            <File>
               <FileName>main.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/main.c</FilePath>
@@ -454,6 +434,26 @@
               <FileName>stm32g4xx_hal_msp.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/stm32g4xx_hal_msp.c</FilePath>
+            </File>
+            <File>
+              <FileName>OLED.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\OLED.c</FilePath>
+            </File>
+            <File>
+              <FileName>pfc_measure.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/pfc_measure.c</FilePath>
+            </File>
+            <File>
+              <FileName>pfc_hrtim.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/pfc_hrtim.c</FilePath>
+            </File>
+            <File>
+              <FileName>vofa.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/vofa.c</FilePath>
             </File>
           </Files>
         </Group>
@@ -585,7 +585,7 @@
       <component Cclass="CMSIS" Cgroup="CORE" Cvendor="ARM" Cversion="4.3.0" condition="CMSIS Core">
         <package name="CMSIS" schemaVersion="1.3" url="http://www.keil.com/pack/" vendor="ARM" version="4.5.0"/>
         <targetInfos>
-          <targetInfo name="02-2OLED+HRTIM+ADC"/>
+          <targetInfo name="02-3OLED+HRTIM+ADC+USART"/>
         </targetInfos>
       </component>
     </components>

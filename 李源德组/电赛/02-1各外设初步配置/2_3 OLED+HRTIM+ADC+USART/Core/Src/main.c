@@ -30,6 +30,7 @@
 #include "pfc_measure.h"
 #include "pfc_hrtim.h"
 #include "iwdg.h"
+#include "vofa.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -50,6 +51,19 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+
+/*
+ * VOFA发送数组与VOFA+通道顺序一一对应，固定为8通道：
+ * 测试锯齿、三路ADC原始值、三路换算值和故障位。
+ */
+static float vofa_data[VOFA_MAX_CHANNELS] = {0.0f};
+
+/* 0~99循环计数，经乘以0.01后形成0.00~0.99的1 Hz测试锯齿波。 */
+static uint16_t vofa_ramp_index = 0U;
+
+/* 供Keil Watch观察串口HAL调用结果；通信失败不触发功率故障。 */
+static uint32_t vofa_tx_ok_count = 0U;
+static uint32_t vofa_tx_error_count = 0U;
 
 /* USER CODE END PV */
 
@@ -199,6 +213,9 @@ int main(void)
   /* OLED属于低速后台任务，不参与10 kHz采样回调。 */
   uint32_t oled_tick = HAL_GetTick();
 
+  /* VOFA以10 ms为发送周期，即每秒发送约100帧。 */
+  uint32_t vofa_tick = HAL_GetTick();
+
   /* 保存上一次监督时刻的序列号，用来判断两路DMA是否仍在持续更新。 */
   uint32_t last_adc1_sequence = 0U;
   uint32_t last_adc2_sequence = 0U;
@@ -207,6 +224,55 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+	/*
+	 * 每10 ms发送一次VOFA数据。阻塞式USART只允许放在主循环，
+	 * 不能放进10 kHz ADC DMA回调，否则会破坏快速采样和后续控制节拍。
+	 */
+	if ((HAL_GetTick() - vofa_tick) >= 10U)
+	{
+		PFC_Measurement vofa_measurement;
+
+		/* 以当前时刻为新基准，主循环偶尔延迟时不连续补发旧帧。 */
+		vofa_tick = HAL_GetTick();
+
+		/* 读取ISR已经发布的完整快照，不直接读取正在由DMA改写的数组。 */
+		PFC_Measure_GetSnapshot(&vofa_measurement);
+
+		/* CH0：独立于ADC的已知锯齿波，用来直接判断USART和VOFA链路。 */
+		vofa_data[0] = (float)vofa_ramp_index * 0.01f;
+		vofa_ramp_index++;
+		if (vofa_ramp_index >= 100U)
+		{
+			vofa_ramp_index = 0U;
+		}
+
+		/* CH1~CH3：原始码值，便于先验证ADC数据是否随输入变化。 */
+		vofa_data[1] = (float)vofa_measurement.ipfc_raw;
+		vofa_data[2] = (float)vofa_measurement.vac_raw;
+		vofa_data[3] = (float)vofa_measurement.vbus_raw;
+
+		/* CH4~CH6：换算后的电流/电压，比例系数后续按模拟前端实测修改。 */
+		vofa_data[4] = vofa_measurement.ipfc;
+		vofa_data[5] = vofa_measurement.vac;
+		vofa_data[6] = vofa_measurement.vbus;
+
+		/* CH7：锁存故障位，正常为0；转为float仅用于JustFloat显示。 */
+		vofa_data[7] = (float)vofa_measurement.fault_bits;
+
+		/*
+		 * HAL_OK只能说明MCU已完成串口发送，最终链路仍需观察VOFA曲线确认。
+		 * 调试通信不是保护条件，因此发送失败只计数，不停ADC/HRTIM也不喂故障。
+		 */
+		if (VOFA_Send(&huart2, vofa_data, VOFA_MAX_CHANNELS) == HAL_OK)
+		{
+			vofa_tx_ok_count++;
+		}
+		else
+		{
+			vofa_tx_error_count++;
+		}
+	}
 	  
 	/*
 	 * 每100 ms执行一次低速显示和安全监督。这里使用无阻塞的Tick差值，
