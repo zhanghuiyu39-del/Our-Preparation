@@ -23,12 +23,13 @@
 #include "hrtim.h"
 #include "usart.h"
 #include "gpio.h"
-#include "iwdg.h"
+
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "SPWM.h"  /* HRTIM单相全桥单极性倍频SPWM模块。 */
 #include "OLED.h"
 #include <stdio.h>
+#include "iwdg.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -49,6 +50,16 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+
+
+	//gpt_hrtim_fault3_test---------------
+	volatile uint32_t hrtim_fault3_count = 0U;
+	volatile uint8_t hrtim_fault3_seen = 0U;
+
+
+
+
+
 
 /* ADC1循环DMA缓冲区：下标0为IPFC，下标1为VBUS。 */
 static volatile uint16_t adc1_dma_buffer[2] = {0U, 0U};
@@ -199,8 +210,6 @@ int main(void)
         OLED_ShowString(2, 1, "OLED OK");
 
     }
-
-	  
 	  
     (void)HAL_IWDG_Refresh(&hiwdg); /* 无功率试波阶段持续喂狗，避免约500 ms后复位。 */
 
@@ -255,6 +264,25 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+
+//gpt_hrtim_fault3_test-----------------------------
+void HAL_HRTIM_Fault3Callback(HRTIM_HandleTypeDef *hhrtim)
+{
+    if ((hhrtim != NULL) && (hhrtim->Instance == HRTIM1))
+    {
+        /* 即使硬件已经关闭PWM，软件仍再次确保驱动使能为低。 */
+        HAL_GPIO_WritePin(PFC_GATE_EN_GPIO_Port,
+                          PFC_GATE_EN_Pin,
+                          GPIO_PIN_RESET);
+
+        hrtim_fault3_seen = 1U;
+        hrtim_fault3_count++;
+    }
+}
+
+
+
 
 /*
  * 两路ADC都由HRTIM Master CMP2以10 kHz触发。
