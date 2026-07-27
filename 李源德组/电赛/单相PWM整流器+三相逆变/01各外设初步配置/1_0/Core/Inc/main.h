@@ -1,8 +1,9 @@
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
-  * @file    stm32g4xx_it.h
-  * @brief   This file contains the headers of the interrupt handlers.
+  * @file           : main.h
+  * @brief          : Header for main.c file.
+  *                   This file contains the common defines of the application.
   ******************************************************************************
   * @attention
   *
@@ -18,12 +19,15 @@
 /* USER CODE END Header */
 
 /* Define to prevent recursive inclusion -------------------------------------*/
-#ifndef __STM32G4xx_IT_H
-#define __STM32G4xx_IT_H
+#ifndef __MAIN_H
+#define __MAIN_H
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Includes ------------------------------------------------------------------*/
+#include "stm32g4xx_hal.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -46,26 +50,38 @@ extern "C" {
 /* USER CODE END EM */
 
 /* Exported functions prototypes ---------------------------------------------*/
-void NMI_Handler(void);
-void HardFault_Handler(void);
-void MemManage_Handler(void);
-void BusFault_Handler(void);
-void UsageFault_Handler(void);
-void SVC_Handler(void);
-void DebugMon_Handler(void);
-void PendSV_Handler(void);
-void SysTick_Handler(void);
-void DMA1_Channel1_IRQHandler(void);
-void DMA1_Channel2_IRQHandler(void);
-void ADC1_2_IRQHandler(void);
-void EXTI9_5_IRQHandler(void);
-void HRTIM1_FLT_IRQHandler(void);
+void Error_Handler(void);
+
 /* USER CODE BEGIN EFP */
 
 /* USER CODE END EFP */
+
+/* Private defines -----------------------------------------------------------*/
+#define PRECHARGE_EN_Pin GPIO_PIN_2
+#define PRECHARGE_EN_GPIO_Port GPIOE
+#define DISCHARGE_EN_Pin GPIO_PIN_3
+#define DISCHARGE_EN_GPIO_Port GPIOE
+#define PFC_NFAULT_DIAG_Pin GPIO_PIN_5
+#define PFC_NFAULT_DIAG_GPIO_Port GPIOE
+#define PFC_NFAULT_DIAG_EXTI_IRQn EXTI9_5_IRQn
+#define INV_NFAULT_DIAG_Pin GPIO_PIN_6
+#define INV_NFAULT_DIAG_GPIO_Port GPIOE
+#define INV_NFAULT_DIAG_EXTI_IRQn EXTI9_5_IRQn
+#define OLED_SCL_Pin GPIO_PIN_15
+#define OLED_SCL_GPIO_Port GPIOA
+#define OLED_SDA_Pin GPIO_PIN_7
+#define OLED_SDA_GPIO_Port GPIOB
+#define PFC_GATE_EN_Pin GPIO_PIN_0
+#define PFC_GATE_EN_GPIO_Port GPIOE
+#define INV_GATE_EN_Pin GPIO_PIN_1
+#define INV_GATE_EN_GPIO_Port GPIOE
+
+/* USER CODE BEGIN Private defines */
+
+/* USER CODE END Private defines */
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* __STM32G4xx_IT_H */
+#endif /* __MAIN_H */
