@@ -8,11 +8,18 @@
  * 数据流：HRTIM Trigger 2 -> ADC3/4/5 -> 三路循环DMA -> 三个完成回调
  *       -> TryPublish建立同周期六通道快照 -> 控制ISR或主循环读取。
  * 本模块不包含QPR、CBSVPWM、OLED、VOFA或任何阻塞HAL调用。
+ *
+ * IU/IV/IW：三相逆变器输出电流采样值，换算后单位A。
+ * VU/VV/VW：三相逆变器输出电压采样值，换算后单位V。
+ * ADC3/4/5分别提供U/V/W相，每个ADC的Rank 1为电流、Rank 2为电压。
  */
 
 /* ======================== 板级标定参数 ======================== */
+/* 使用256个同步完整帧求平均零点；10 kHz采样时约需25.6 ms。 */
 #define INV_ADC_OFFSET_SAMPLES (256U)
+/* 12位ADC的最大合法原始码。 */
 #define INV_ADC_RAW_MAX        (4095U)
+/* 任一路尚未被共同消费的序列距离达到3帧时，判定三路DMA失步。 */
 #define INV_ADC_MAX_SKEW       (3U)
 
 /*
@@ -27,27 +34,36 @@
 #define INV_VW_V_PER_COUNT (0.010f)
 
 /* ======================== DMA原始缓冲区 ======================== */
+/* DMA负责写入；中断和主循环应通过已发布快照读取，不直接拼接这些数组。 */
 volatile uint16_t INV_Adc3Dma[2] = {0U, 0U};
 volatile uint16_t INV_Adc4Dma[2] = {0U, 0U};
 volatile uint16_t INV_Adc5Dma[2] = {0U, 0U};
 
 /* ======================== 模块内部状态 ======================== */
+/* 唯一对外发布的测量对象，由ADC完成中断维护，主循环通过GetSnapshot复制。 */
 static volatile INV_Measurement inv_measurement;
+
+/* 各DMA完整传输回调各自递增对应序号，用于判断三个ADC是否属于同一触发帧。 */
 static volatile uint32_t adc3_sequence;
 static volatile uint32_t adc4_sequence;
 static volatile uint32_t adc5_sequence;
+
+/* 最近一次已经共同拼帧并消费的序号，防止同一DMA帧被重复发布。 */
 static uint32_t used_adc3_sequence;
 static uint32_t used_adc4_sequence;
 static uint32_t used_adc5_sequence;
 
 /* 六路前端默认均为双极性中点采样，启动后用256个完整帧求零点。 */
+/* 32位累加器保存256帧原始码之和，容量覆盖4095*256且不会溢出。 */
 static uint32_t iu_offset_sum;
 static uint32_t iv_offset_sum;
 static uint32_t iw_offset_sum;
 static uint32_t vu_offset_sum;
 static uint32_t vv_offset_sum;
 static uint32_t vw_offset_sum;
+/* 已参与零点平均的同步帧数，达到INV_ADC_OFFSET_SAMPLES后停止累加。 */
 static uint16_t offset_sample_count;
+/* 六路零输入平均原始码，后续换算物理量时作为ADC零点扣除。 */
 static uint16_t iu_offset;
 static uint16_t iv_offset;
 static uint16_t iw_offset;
@@ -76,9 +92,11 @@ static uint8_t INV_Measure_SyncLost(uint32_t seq3, uint32_t seq4, uint32_t seq5)
 /* 三路DMA均有新序列时，按固定Rank顺序发布一次完整测量帧。 */
 static void INV_Measure_TryPublish(void)
 {
+    /* 先各读取一次volatile序号，本次拼帧判断始终使用同一组局部副本。 */
     uint32_t seq3 = adc3_sequence;
     uint32_t seq4 = adc4_sequence;
     uint32_t seq5 = adc5_sequence;
+    /* 复用的有符号中间量，保存“原始码-零点”，避免无符号减法下溢。 */
     int32_t signed_count;
 
     if ((seq3 == used_adc3_sequence) ||
@@ -170,6 +188,10 @@ static void INV_Measure_TryPublish(void)
     inv_measurement.valid = 1U;
 }
 
+/**
+ * @brief  清空DMA缓冲区、同步序号、故障状态及六路零点标定累加器。
+ * @note   在ADC3/4/5校准和HAL_ADC_Start_DMA()之前调用一次；采样运行时禁止调用。
+ */
 void INV_Measure_Init(void)
 {
     /* DMA启动前清零，避免调试器先看到上一次运行留下的数据。 */
@@ -203,29 +225,50 @@ void INV_Measure_Init(void)
     vw_offset = 2048U;
 }
 
+/**
+ * @brief  ADC3规则组DMA完成处理，表示本周期IU和VU两个Rank均已更新。
+ * @note   由HAL_ADC_ConvCpltCallback()调用；函数随后尝试建立六通道同步快照。
+ */
 void INV_Measure_OnAdc3Complete(void)
 {
     adc3_sequence++;
     INV_Measure_TryPublish();
 }
 
+/**
+ * @brief  ADC4规则组DMA完成处理，表示本周期IV和VV两个Rank均已更新。
+ * @note   由HAL_ADC_ConvCpltCallback()调用；函数随后尝试建立六通道同步快照。
+ */
 void INV_Measure_OnAdc4Complete(void)
 {
     adc4_sequence++;
     INV_Measure_TryPublish();
 }
 
+/**
+ * @brief  ADC5规则组DMA完成处理，表示本周期IW和VW两个Rank均已更新。
+ * @note   由HAL_ADC_ConvCpltCallback()调用；函数随后尝试建立六通道同步快照。
+ */
 void INV_Measure_OnAdc5Complete(void)
 {
     adc5_sequence++;
     INV_Measure_TryPublish();
 }
 
+/**
+ * @brief  HAL报告ADC或DMA错误时的统一入口。
+ * @note   锁存INV_FAULT_ADC_ERROR，并通过测量故障入口立即关闭逆变输出。
+ */
 void INV_Measure_AdcError(void)
 {
     INV_Measure_Trip(INV_FAULT_ADC_ERROR);
 }
 
+/**
+ * @brief  锁存故障并立即关闭逆变Gate Enable、HRTIM输出和C/D/E计数器。
+ * @param  fault_bits 可一次传入一个或多个INV_FaultMask位。
+ * @note   使用“或”运算保留历史故障；本函数不会自动清除故障或重启PWM。
+ */
 void INV_Measure_Trip(uint32_t fault_bits)
 {
     inv_measurement.fault_bits |= fault_bits;
@@ -233,8 +276,14 @@ void INV_Measure_Trip(uint32_t fault_bits)
     INV_HRTIM_StopAll();
 }
 
+/**
+ * @brief  将ADC中断维护的完整六通道测量结果复制给调用者。
+ * @param  measurement 调用者提供的目标结构体地址；NULL输入会直接返回。
+ * @note   复制期间短暂屏蔽中断，并恢复调用前的PRIMASK，保证快照字段来自同一时刻。
+ */
 void INV_Measure_GetSnapshot(INV_Measurement *measurement)
 {
+    /* 保存调用者原有中断屏蔽状态，复制完成后按原状态恢复。 */
     uint32_t primask;
 
     if (measurement == NULL) {
@@ -248,6 +297,9 @@ void INV_Measure_GetSnapshot(INV_Measurement *measurement)
     __set_PRIMASK(primask);
 }
 
+/**
+ * @brief  返回当前锁存的INV_FaultMask组合，0表示没有软件故障。
+ */
 uint32_t INV_Measure_GetFault(void)
 {
     return inv_measurement.fault_bits;

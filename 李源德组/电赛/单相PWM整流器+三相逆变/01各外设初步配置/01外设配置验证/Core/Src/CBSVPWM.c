@@ -4,6 +4,18 @@
 #include <stddef.h>
 #include <string.h>
 
+/*
+ * 本文件只负责“三相电压指令 -> 零序注入 -> 桥臂占空比”的数学运算，
+ * 不负责ADC采样、HRTIM寄存器更新、Gate Enable或故障状态机。
+ * 数据流如下：
+ * 三相电压指令(V) -> 除以Vdc/2归一化 -> 去除三相平均值
+ *                  -> 最大最小值零序注入 -> 统一限幅 -> duty_u/v/w/n
+ *
+ * vu/vv/vw_command：控制器或开环发生器给出的三相电压指令，单位V。
+ * modulation_u/v/w/n：桥臂无量纲调制量，0对应50%占空比。
+ * duty_u/v/w/n：最终占空比，范围0~1，由应用层写入具体PWM外设。
+ */
+
 /* 用乘法代替运行时除法构造三相平均值，同时保持所有运算为单精度。 */
 #define CBSVPWM_ONE_THIRD (0.33333333333333333333f)
 
@@ -89,16 +101,25 @@ static uint8_t CBSVPWM_CalcInternal(CBSVPWM_t *svpwm,
                                     float dc_voltage,
                                     uint8_t four_leg)
 {
+    /* 归一化增益单位为1/V，用于把相电压指令换算成无量纲调制指令。 */
     float normalization_gain;
+
+    /* 去除三相平均值后的无量纲分量，是零序注入算法的实际输入。 */
     float centered_u;
     float centered_v;
     float centered_w;
+
+    /* 去平均后三相分量的极值，用于计算公共零序分量。 */
     float maximum;
     float minimum;
+
+    /* 尚未执行统一限幅的U/V/W/N桥臂无量纲调制量。 */
     float modulation_u;
     float modulation_v;
     float modulation_w;
     float modulation_n;
+
+    /* 最大桥臂指令绝对值，以及保持相间比例不变的公共缩放系数(0, 1]。 */
     float maximum_absolute;
     float scale;
 
@@ -213,6 +234,14 @@ static uint8_t CBSVPWM_CalcInternal(CBSVPWM_t *svpwm,
     return 1U;
 }
 
+/**
+ * @brief  初始化CBSVPWM对象并把输出恢复为50%中性占空比。
+ * @param  svpwm CBSVPWM运行对象地址，不能为NULL。
+ * @param  modulation_limit 最大桥臂调制度，范围为(0, 1]，无量纲。
+ * @param  minimum_dc_voltage 允许参与归一化计算的最低母线电压，单位V。
+ * @retval 1 参数有效且初始化完成；0 参数非法或对象地址为空。
+ * @note   在控制ISR启动前调用一次；本函数不访问HRTIM或Gate Enable。
+ */
 uint8_t CBSVPWM_Init(CBSVPWM_t *svpwm,
                      float modulation_limit,
                      float minimum_dc_voltage)
@@ -240,6 +269,11 @@ uint8_t CBSVPWM_Init(CBSVPWM_t *svpwm,
     return 1U;
 }
 
+/**
+ * @brief  清除最近一次计算状态并恢复四路50%占空比。
+ * @param  svpwm 已初始化的CBSVPWM运行对象地址；NULL输入会直接返回。
+ * @note   保留初始化参数，停机或故障后仍需由应用层单独关闭PWM输出。
+ */
 void CBSVPWM_Reset(CBSVPWM_t *svpwm)
 {
     if (svpwm == NULL) {
@@ -249,6 +283,16 @@ void CBSVPWM_Reset(CBSVPWM_t *svpwm)
     CBSVPWM_SetNeutralOutput(svpwm);
 }
 
+/**
+ * @brief  根据U/V/W三相电压指令计算三桥臂CBSVPWM占空比。
+ * @param  svpwm CBSVPWM运行对象地址。
+ * @param  vu_command U相电压指令，单位V。
+ * @param  vv_command V相电压指令，单位V。
+ * @param  vw_command W相电压指令，单位V。
+ * @param  dc_voltage 当前直流母线电压，单位V。
+ * @retval 1 本周期计算有效；0 输入非法，此时输出恢复为50%占空比。
+ * @note   函数无阻塞，可在10 kHz控制ISR中调用，但不会自动更新HRTIM。
+ */
 uint8_t CBSVPWM_Calc3Leg(CBSVPWM_t *svpwm,
                          float vu_command,
                          float vv_command,
@@ -263,6 +307,16 @@ uint8_t CBSVPWM_Calc3Leg(CBSVPWM_t *svpwm,
                                 0U);
 }
 
+/**
+ * @brief  根据U/V/W三相电压指令计算U/V/W/N四桥臂CBSVPWM占空比。
+ * @param  svpwm CBSVPWM运行对象地址。
+ * @param  vu_command U相对目标中性点的电压指令，单位V。
+ * @param  vv_command V相对目标中性点的电压指令，单位V。
+ * @param  vw_command W相对目标中性点的电压指令，单位V。
+ * @param  dc_voltage 当前直流母线电压，单位V。
+ * @retval 1 本周期计算有效；0 输入非法，此时输出恢复为50%占空比。
+ * @note   这里只计算N桥臂占空比，不代表HRTIM F及其功率硬件已经启用。
+ */
 uint8_t CBSVPWM_Calc4Leg(CBSVPWM_t *svpwm,
                          float vu_command,
                          float vv_command,

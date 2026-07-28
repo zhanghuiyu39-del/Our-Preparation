@@ -106,6 +106,12 @@ static uint16_t inv_phase_index = 0U;
 static volatile uint32_t inv_control_heartbeat = 0U;
 static uint32_t inv_last_control_frame = 0U;
 
+/*
+ * inv_sine_state/inv_cosine_state保存当前电角度的单位旋转向量；inv_sine_u是
+ * 提供给主循环观测的U相参考。inv_phase_index记录当前200点周期位置；两个
+ * heartbeat变量分别表示已完成的控制次数和最近已消费的测量帧号。
+ */
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -135,6 +141,7 @@ static HAL_StatusTypeDef INV_TestStartMcuOutputs(void);
  */
 static HAL_StatusTypeDef INV_TestWaitForOffset(void)
 {
+  /* start_tick是本次等待的毫秒基准；measurement是测量模块发布的一致性快照。 */
   uint32_t start_tick = HAL_GetTick();
   INV_Measurement measurement;
 
@@ -204,10 +211,15 @@ static HAL_StatusTypeDef INV_TestStartMcuOutputs(void)
  */
 static void INV_TestOpenLoopStep(void)
 {
+  /* U/V/W为无量纲单位正弦，三者相位依次相差120度。 */
   float sine_u;
   float sine_v;
   float sine_w;
+
+  /* 三相电压指令的峰值，单位V；由虚拟母线电压与调制度共同决定。 */
   float voltage_amplitude;
+
+  /* 正余弦递推临时值：先同时算出，再回写状态，避免计算顺序相互污染。 */
   float next_sine;
   float next_cosine;
 
@@ -445,7 +457,16 @@ int main(void)
   uint32_t oled_tick = HAL_GetTick();
 
   /* 保存上次监督快照，用于判断三路DMA和10 kHz控制是否持续推进。 */
+  /*
+   * 三个tick分别是VOFA、OLED和安全监督任务的毫秒时间基准；各任务独立计时，
+   * 某个低速任务偶尔延迟不会改变另外两个任务的周期判断。
+   */
   uint32_t supervisor_tick = HAL_GetTick();
+
+  /*
+   * 以下值保存上一次100 ms监督时看到的序列号/心跳。当前值必须与它们不同，
+   * 才能证明三路DMA、六通道拼帧以及CBSVPWM控制入口均在持续运行。
+   */
   uint32_t last_adc3_sequence = 0U;
   uint32_t last_adc4_sequence = 0U;
   uint32_t last_adc5_sequence = 0U;
@@ -463,6 +484,7 @@ int main(void)
      */
     if ((HAL_GetTick() - vofa_tick) >= INV_TEST_VOFA_PERIOD_MS)
     {
+      /* 局部副本在短暂关中断期间一次性取得，后续串口发送不再访问ISR共享对象。 */
       INV_Measurement measurement;
 
       vofa_tick = HAL_GetTick();
@@ -497,6 +519,7 @@ int main(void)
      */
     if ((HAL_GetTick() - supervisor_tick) >= INV_TEST_SUPERVISOR_PERIOD_MS)
     {
+      /* 本轮监督使用同一份完整快照比较所有ADC序列、有效标志和故障位。 */
       INV_Measurement measurement;
 
       supervisor_tick = HAL_GetTick();
@@ -541,6 +564,7 @@ int main(void)
      */
     if ((HAL_GetTick() - oled_tick) >= INV_TEST_OLED_PERIOD_MS)
     {
+      /* OLED只显示此处取得的完整快照，不直接读取DMA正在更新的原始数组。 */
       INV_Measurement measurement;
 
       /* 主循环偶尔延迟时不连续补刷旧帧，而是以当前时刻作为下一周期基准。 */
@@ -639,7 +663,10 @@ void SystemClock_Config(void)
  */
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
+  /* 回调内快照用于判断三个DMA是否已拼成一个新的、可供控制使用的完整帧。 */
   INV_Measurement measurement;
+
+  /* 标记本次回调是否来自ADC3/4/5，避免未来其他ADC误触发逆变控制入口。 */
   uint8_t inverter_adc = 1U;
 
   if ((hadc != NULL) && (hadc->Instance == ADC3))
@@ -679,6 +706,10 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
   }
 }
 
+/**
+ * @brief ADC及其DMA错误回调，仅处理本测试启用的ADC3/4/5。
+ * @param hadc 报告错误的ADC句柄；NULL或ADC1/2不会进入逆变故障处理。
+ */
 void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc)
 {
   /*
@@ -709,6 +740,10 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
   }
 }
 
+/**
+ * @brief HRTIM Fault 3中断回调，在硬件关断完成后锁存软件故障记录。
+ * @param hhrtim 触发Fault回调的HRTIM句柄；本工程仅配置HRTIM1。
+ */
 void HAL_HRTIM_Fault3Callback(HRTIM_HandleTypeDef *hhrtim)
 {
   /*

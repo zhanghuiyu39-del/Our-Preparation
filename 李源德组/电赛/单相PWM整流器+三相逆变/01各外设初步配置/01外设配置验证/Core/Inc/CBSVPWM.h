@@ -8,6 +8,11 @@ extern "C" {
 #include <stdint.h>
 
 /*
+ * 本头文件公开CBSVPWM运行状态和三/四桥臂计算接口。
+ * 模块只输出无量纲占空比，不直接依赖STM32 HAL或具体PWM外设。
+ */
+
+/*
  * 载波型空间矢量PWM运行对象。
  *
  * 结构体公开是为了便于在Keil Watch中观察归一化过程、零序注入量和最终占空比。
@@ -46,7 +51,7 @@ typedef struct {
     uint8_t limited;
 } CBSVPWM_t;
 
-/*
+/**
  * 初始化CBSVPWM参数并把四路输出恢复到50%中性占空比。
  * modulation_limit：允许的桥臂最大绝对调制度，范围为(0, 1]，推荐从0.90f开始。
  * minimum_dc_voltage：允许执行归一化计算的最低母线电压，单位V，必须大于0。
@@ -58,14 +63,14 @@ uint8_t CBSVPWM_Init(CBSVPWM_t *svpwm,
                      float modulation_limit,
                      float minimum_dc_voltage);
 
-/*
+/**
  * 清除最近一次计算结果并恢复50%中性占空比，同时保留初始化参数。
  * 调用位置：停机、Fault锁存、重新闭环或软启动开始前；函数无阻塞，允许在ISR中调用。
  * 副作用：不写入HRTIM，应用层仍需单独关闭PWM输出和Gate Enable。
  */
 void CBSVPWM_Reset(CBSVPWM_t *svpwm);
 
-/*
+/**
  * 计算三桥臂U/V/W的CBSVPWM占空比。
  * vu/vv/vw_command：QPR或开环参考给出的三相电压指令，单位V。
  * dc_voltage：本控制周期的直流母线电压，单位V。
@@ -79,7 +84,7 @@ uint8_t CBSVPWM_Calc3Leg(CBSVPWM_t *svpwm,
                          float vw_command,
                          float dc_voltage);
 
-/*
+/**
  * 计算四桥臂U/V/W/N的CBSVPWM占空比，N桥臂关系与目标Simulink模型的Gn一致。
  * vu/vv/vw_command：相对于目标负载中性点的三相电压指令，单位V。
  * dc_voltage：本控制周期的直流母线电压，单位V。
