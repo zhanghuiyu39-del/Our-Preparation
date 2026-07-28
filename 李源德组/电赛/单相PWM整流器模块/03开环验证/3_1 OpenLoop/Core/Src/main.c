@@ -195,7 +195,7 @@ int main(void)
   __HAL_DMA_DISABLE_IT(hadc1.DMA_Handle, DMA_IT_HT);
 
   /* 使用10%调制度初始化50 Hz开环正弦，初始比较值保持两个桥臂均为50%。 */
-  SPWM_Init(0.10f);
+  SPWM_Init(0.50f);
 
   /*
    * 启动Master、Timer A/B计数器以产生10 kHz ADC Trigger。
