@@ -45,6 +45,16 @@
 /*
  * 本文件只进行MCU侧开环逆变验证，不使能实际门极驱动器。
  * 10 kHz控制频率除以50 Hz基波频率得到每个基波周期200个控制点。
+ *
+ *虚拟母线电压：48 V
+ *初始调制度：0.10
+ *最大调制度：0.90
+ *控制更新频率：10 kHz
+ *正弦周期点数：200
+ *输出基波频率：50 Hz
+ *后台监督频率：10 Hz
+ *VOFA发送频率：100 Hz
+ *
  */
 #define INV_TEST_VIRTUAL_DC_V          (48.0f)
 #define INV_TEST_MODULATION            (0.10f)
@@ -56,10 +66,10 @@
 #define INV_TEST_VOFA_PERIOD_MS        (10U)
 #define INV_TEST_OLED_PERIOD_MS        (100U)
 
-/* 旋转角为2*pi/200；预先写入常量，避免在10 kHz中断中调用三角函数。 */
-#define INV_TEST_SIN_DELTA             (0.0314107591f)
-#define INV_TEST_COS_DELTA             (0.9995065604f)
-#define INV_TEST_SQRT3_DIV2            (0.8660254038f)
+/* 旋转角增量Δθ为2*pi/200；预先写入常量，避免在10 kHz中断中调用三角函数。 */
+#define INV_TEST_SIN_DELTA             (0.0314107591f) //旋转角增量正弦: sin(1.8°)
+#define INV_TEST_COS_DELTA             (0.9995065604f) //旋转角增量余弦: cos(1.8°)
+#define INV_TEST_SQRT3_DIV2            (0.8660254038f) //√3 / 2
 
 /* USER CODE END PD */
 
