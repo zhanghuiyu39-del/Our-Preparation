@@ -22,6 +22,8 @@
 #include "stm32g4xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "inv_hrtim.h"
+#include "inv_measure.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -79,7 +81,11 @@ extern HRTIM_HandleTypeDef hhrtim1;
 void NMI_Handler(void)
 {
   /* USER CODE BEGIN NonMaskableInt_IRQn 0 */
-
+  /*
+   * CSS在HSE失效时先进入NMI。此处立即拉低Gate Enable并停止逆变输出，
+   * HAL随后清理RCC中断标志；软件只记录故障，不尝试自动恢复功率级。
+   */
+  INV_Measure_Trip(INV_FAULT_CLOCK);
   /* USER CODE END NonMaskableInt_IRQn 0 */
   HAL_RCC_NMI_IRQHandler();
   /* USER CODE BEGIN NonMaskableInt_IRQn 1 */
@@ -95,7 +101,7 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
-
+  INV_HRTIM_StopAll();
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
   {
@@ -110,7 +116,7 @@ void HardFault_Handler(void)
 void MemManage_Handler(void)
 {
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
-
+  INV_HRTIM_StopAll();
   /* USER CODE END MemoryManagement_IRQn 0 */
   while (1)
   {
@@ -125,7 +131,7 @@ void MemManage_Handler(void)
 void BusFault_Handler(void)
 {
   /* USER CODE BEGIN BusFault_IRQn 0 */
-
+  INV_HRTIM_StopAll();
   /* USER CODE END BusFault_IRQn 0 */
   while (1)
   {
@@ -140,7 +146,7 @@ void BusFault_Handler(void)
 void UsageFault_Handler(void)
 {
   /* USER CODE BEGIN UsageFault_IRQn 0 */
-
+  INV_HRTIM_StopAll();
   /* USER CODE END UsageFault_IRQn 0 */
   while (1)
   {

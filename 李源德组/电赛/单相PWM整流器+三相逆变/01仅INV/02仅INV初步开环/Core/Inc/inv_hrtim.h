@@ -13,7 +13,7 @@ extern "C" {
  * 调用者负责CBSVPWM计算、安全状态机及故障恢复，本模块不自动重新启动输出。
  */
 
-/* 当前01.ioc固定使用10 kHz、中心对齐、Period=34000的HRTIM C/D/E。 */
+/* 当前02OpenLoop.ioc固定使用10 kHz、中心对齐、Period=34000的HRTIM C/D/E。 */
 #define INV_HRTIM_PERIOD_COUNTS (34000U)
 #define INV_HRTIM_DUTY_MIN      (0.05f)
 #define INV_HRTIM_DUTY_MAX      (0.95f)

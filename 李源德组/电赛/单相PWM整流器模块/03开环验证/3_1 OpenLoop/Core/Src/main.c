@@ -31,6 +31,8 @@
 #include "pfc_hrtim.h"
 #include "iwdg.h"
 #include "vofa.h"
+#include "pfc_params.h"
+#include "pfc_app.h"
 #include "SPWM.h"  /* HRTIM单相全桥单极性倍频SPWM模块。 */
 /* USER CODE END Includes */
 
@@ -60,11 +62,11 @@
 static float vofa_data[VOFA_MAX_CHANNELS] = {0.0f};
 
 /* 0~99循环计数，经乘以0.01后形成0.00~0.99的1 Hz测试锯齿波。 */
-static uint16_t vofa_ramp_index = 0U;
-
 /* 供Keil Watch观察串口HAL调用结果；通信失败不触发功率故障。 */
 static uint32_t vofa_tx_ok_count = 0U;
 static uint32_t vofa_tx_error_count = 0U;
+static const PFC_Params *pfc_params = NULL;
+static uint8_t pfc_iwdg_reset_seen = 0U;
 
 /* USER CODE END PV */
 
@@ -76,10 +78,6 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
-/* 无功率开环试波使用的四路HRTIM输出；PE0在整个测试过程中保持低电平。 */
-#define PFC_OPEN_LOOP_OUTPUTS (HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2 | \
-                               HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2)
 
 /* USER CODE END 0 */
 
@@ -120,6 +118,10 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
 
+  pfc_iwdg_reset_seen = (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST) != RESET) ? 1U : 0U;
+  __HAL_RCC_CLEAR_RESET_FLAGS();
+  pfc_params = PFC_Params_GetActive();
+
 	/*
 	 * 上电后先等待OLED内部电源和电荷泵稳定。该延时只在初始化阶段执行，
 	 * 不能放入主循环或快速采样回调，否则会阻塞后台任务或控制节拍。
@@ -128,7 +130,7 @@ int main(void)
 	OLED_Init();
 
 	/* 初始化测量模块的软件状态、DMA样本快照、序列号和故障标志。 */
-	PFC_Measure_Init();
+	PFC_Measure_Init(pfc_params);
 
 	/*
 	 * 固定标签只写一次，避免软件I2C在主循环中重复传输不变内容：
@@ -194,9 +196,6 @@ int main(void)
   __HAL_DMA_DISABLE_IT(hadc2.DMA_Handle, DMA_IT_HT);
   __HAL_DMA_DISABLE_IT(hadc1.DMA_Handle, DMA_IT_HT);
 
-  /* 使用10%调制度初始化50 Hz开环正弦，初始比较值保持两个桥臂均为50%。 */
-  SPWM_Init(0.50f);
-
   /*
    * 启动Master、Timer A/B计数器以产生10 kHz ADC Trigger。
    * 此函数只建立采样时基，不开放TA1/TA2/TB1/TB2输出，也不拉高PE0。
@@ -208,14 +207,10 @@ int main(void)
   }
 
   /*
-   * 只开放MCU的四路HRTIM引脚供示波器观察，PE0仍保持低电平，
-   * 因此本阶段不会使能外部门极驱动器或接入实际交流功率级。
+   * 此时只启动计数器和ADC触发，四路PWM与PE0继续保持关闭。
+   * 状态机确认标定、VAC、VBUS和故障输入后，才接受PD0短按启动。
    */
-  if (HAL_HRTIM_WaveformOutputStart(&hhrtim1, PFC_OPEN_LOOP_OUTPUTS) != HAL_OK)
-  {
-    PFC_Measure_Trip(PFC_FAULT_HRTIM);
-    Error_Handler();
-  }
+  PFC_AppInit(pfc_params, pfc_iwdg_reset_seen);
 
   /*
    * IWDG放在可能耗时或失败的初始化之后启动。启动后不能关闭，只有在
@@ -237,11 +232,18 @@ int main(void)
   /* 保存上一次监督时刻的序列号，用来判断两路DMA是否仍在持续更新。 */
   uint32_t last_adc1_sequence = 0U;
   uint32_t last_adc2_sequence = 0U;
+  uint32_t app_tick = HAL_GetTick();
   while (1)
   {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+    while ((HAL_GetTick() - app_tick) >= 1U)
+    {
+      app_tick++;
+      PFC_AppTick1ms();
+    }
 
 	/*
 	 * 每10 ms发送一次VOFA数据。阻塞式USART只允许放在主循环，
@@ -257,26 +259,35 @@ int main(void)
 		/* 读取ISR已经发布的完整快照，不直接读取正在由DMA改写的数组。 */
 		PFC_Measure_GetSnapshot(&vofa_measurement);
 
-		/* CH0：独立于ADC的已知锯齿波，用来直接判断USART和VOFA链路。 */
-		vofa_data[0] = (float)vofa_ramp_index * 0.01f;
-		vofa_ramp_index++;
-		if (vofa_ramp_index >= 100U)
+		/*
+		 * 标定状态：CH0~CH2发送IPFC/VAC/VBUS原始码，CH3~CH5发送占位比例换算结果。
+		 * 其他状态：CH0~CH6发送VAC、VAC_RMS、IPFC、IPFC_RMS、VBUS、电流指令和调制量。
+		 */
+		if (PFC_AppGetState() == PFC_CALIBRATION)
 		{
-			vofa_ramp_index = 0U;
+			/* 标定状态优先发送三路原始码值，PE0保持低，便于计算零点和比例。 */
+			vofa_data[0] = (float)vofa_measurement.ipfc_raw;
+			vofa_data[1] = (float)vofa_measurement.vac_raw;
+			vofa_data[2] = (float)vofa_measurement.vbus_raw;
+			vofa_data[3] = vofa_measurement.ipfc;
+			vofa_data[4] = vofa_measurement.vac;
+			vofa_data[5] = vofa_measurement.vbus;
+			vofa_data[6] = 0.0f;
+		}
+		else
+		{
+			vofa_data[0] = vofa_measurement.vac;
+			vofa_data[1] = vofa_measurement.vac_rms;
+			vofa_data[2] = vofa_measurement.ipfc;
+			vofa_data[3] = vofa_measurement.ipfc_rms;
+			vofa_data[4] = vofa_measurement.vbus;
+			vofa_data[5] = SPWM_GetCurrentCommand();
+			vofa_data[6] = SPWM_GetModulation();
 		}
 
-		/* CH1~CH3：原始码值，便于先验证ADC数据是否随输入变化。 */
-		vofa_data[1] = (float)vofa_measurement.ipfc_raw;
-		vofa_data[2] = (float)vofa_measurement.vac_raw;
-		vofa_data[3] = (float)vofa_measurement.vbus_raw;
-
-		/* CH4~CH6：换算后的电流/电压，比例系数后续按模拟前端实测修改。 */
-		vofa_data[4] = vofa_measurement.ipfc;
-		vofa_data[5] = vofa_measurement.vac;
-		vofa_data[6] = vofa_measurement.vbus;
-
-		/* CH7：锁存故障位，正常为0；转为float仅用于JustFloat显示。 */
-		vofa_data[7] = (float)vofa_measurement.fault_bits;
+		/* CH7高16位为PFC_State，低16位为锁存故障；转为float仅用于JustFloat传输。 */
+		vofa_data[7] = (float)(((uint32_t)PFC_AppGetState() << 16) |
+		                            (vofa_measurement.fault_bits & 0xFFFFU));
 
 		/*
 		 * HAL_OK只能说明MCU已完成串口发送，最终链路仍需观察VOFA曲线确认。
@@ -330,7 +341,8 @@ int main(void)
         OLED_ShowNum(3, 8, vbus_cv, 5);
 
         OLED_ShowNum(4, 3, measurement.fast_heartbeat % 100000U, 5);
-        OLED_ShowHexNum(4, 10, measurement.fault_bits, 2);
+        OLED_ShowNum(4, 9, (uint32_t)PFC_AppGetState(), 1);
+        OLED_ShowHexNum(4, 11, measurement.fault_bits, 3);
 
         /*
          * 两个序列号在相邻监督周期之间都必须前进。任一路停滞说明ADC、
@@ -341,8 +353,7 @@ int main(void)
         {
             PFC_Measure_Trip(PFC_FAULT_ADC_SYNC);
         }
-        else if ((measurement.valid != 0U) &&
-                 (measurement.fault_bits == PFC_FAULT_NONE))
+        else if (PFC_AppWatchdogHealthy() != 0U)
         {
             /* 仅健康状态喂狗；不要在中断中或无条件刷新IWDG。 */
             (void)HAL_IWDG_Refresh(&hiwdg);
@@ -432,7 +443,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
     /* ADC1完整序列是唯一10 kHz更新入口；锁存故障后不得继续推进SPWM。 */
     if (PFC_Measure_GetFault() == PFC_FAULT_NONE)
     {
-      SPWM_OpenLoopStep();
+      PFC_AppFastStep();
     }
   }
 }

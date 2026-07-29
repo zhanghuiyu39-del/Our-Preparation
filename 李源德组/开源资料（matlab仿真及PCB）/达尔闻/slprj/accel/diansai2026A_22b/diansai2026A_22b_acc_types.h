@@ -1,0 +1,10 @@
+#ifndef RTW_HEADER_diansai2026A_22b_acc_types_h_
+#define RTW_HEADER_diansai2026A_22b_acc_types_h_
+typedef struct P_PR_diansai2026A_22b_T_ P_PR_diansai2026A_22b_T ; typedef
+struct P_PR_diansai2026A_22b_a_T_ P_PR_diansai2026A_22b_a_T ; typedef struct
+P_RMS_diansai2026A_22b_T_ P_RMS_diansai2026A_22b_T ; typedef struct
+P_TrueRMS_diansai2026A_22b_T_ P_TrueRMS_diansai2026A_22b_T ; typedef struct
+P_RMS_diansai2026A_22b_a_T_ P_RMS_diansai2026A_22b_a_T ; typedef struct
+P_TrueRMS_diansai2026A_22b_d_T_ P_TrueRMS_diansai2026A_22b_d_T ; typedef
+struct P_diansai2026A_22b_T_ P_diansai2026A_22b_T ;
+#endif

@@ -2,7 +2,7 @@
 
 ## 1. 适用环境与目标
 
-本文基于 [`01时钟树配置.ioc`](01时钟树配置/01时钟树配置.ioc)，用于在 STM32CubeMX 中继续配置单相全桥 PWM 整流器的首版外设。
+本文以当前 [`03-1OpenLoop.ioc`](<03开环验证/3_1 OpenLoop/03-1OpenLoop.ioc>) 为配置事实来源，用于配置题目要求1~5所需的单相全桥PWM整流器外设，并为后续三相逆变器联合运行保留资源。
 
 | 项目 | 基线 |
 | --- | --- |
@@ -17,7 +17,57 @@
 
 本文只描述 CubeMX 中实际存在的设置，以及生成代码后必须补充的启动和保护逻辑。不会把软件状态机、HAL 启动调用或示波器整定项伪装成 CubeMX 参数。
 
+当前IOC由`STM32Cube FW_G4 V1.6.3`生成，且`ProjectManager.LastFirmware=true`；本项目规范仍固定为V1.6.2。因此，下次正式重新生成代码前，应在CubeMX中选择`STM32Cube FW_G4 V1.6.2`并关闭自动使用最新固件包。切换固件包后必须完整比较HRTIM、ADC、DMA和Fault生成代码，不应只依据CubeMX页面无报错判断迁移成功。
+
 > PE0 必须有板级下拉。驱动器必须具备独立 DESAT/OCP 或等效短路保护。PB10/HRTIM1_FLT3 是首版必须保留的硬件关断路径，ADC 软件过流不能替代它。
+
+### 1.1 题目要求1~5对应的系统目标
+
+| 项目 | 目标 |
+| --- | --- |
+| 单相输入 | 36 V RMS、50 Hz |
+| 三相输出模式1 | 线电压32 V RMS、60 Hz、线电流2.0 A |
+| 三相输出模式2 | 线电压32 V RMS、30 Hz、线电流2.0 A |
+| 输入功率因数 | 不低于0.98，按60 Hz额定输出工况验收 |
+| 整机效率 | 不低于95%，包含直流辅助电源消耗 |
+| 输出线电压THD | 不大于2%，按60 Hz额定输出工况验收 |
+
+三相阻性负载额定输出功率约为：
+
+```text
+Pout = sqrt(3) x 32 V x 2 A = 110.9 W
+```
+
+按95%效率和0.98输入功率因数估算，36 V输入侧额定电流约为3.3 A RMS。IPFC传感器、模拟前端和软件量程应覆盖启动与纹波峰值，初步建议至少覆盖正负5 A，最终范围由电感纹波和硬件保护阈值确定。
+
+36 V输入峰值约为50.9 V。为给升压PFC和后级三相SVPWM留出裕量，母线目标可先在60~65 V范围内进行仿真和低压验证，但最终值必须依据实际拓扑、器件耐压、调制度和损耗重新确定，不能把该范围直接当作最终保护阈值。
+
+### 1.2 分阶段配置档
+
+| 配置档 | CubeMX资源 | 输出允许条件 |
+| --- | --- | --- |
+| 裸板开环验证 | 当前HRTIM A/B、ADC1/2、DMA、USART2、OLED、IWDG、FLT3 | PE0始终为低，只允许示波器测PA8~PA11 |
+| 低压PFC验证 | 外设配置基本不变，增加VAC同步、软件保护和人工启动状态机 | 隔离限流低压、采样有效、Fault无效且人工确认后才允许PE0为高 |
+| 题目要求1~5联合运行 | 在后续联合工程增加HRTIM C/D/E、逆变采样和INV_GATE_EN | PFC母线稳定后启动逆变器，支持60 Hz和30 Hz两档 |
+
+当前IOC不需要提前启用HRTIM C/D/E/F或ADC3/4/5，但相应引脚不得分配给无关的永久功能。裸板开环代码中自动开放MCU PWM引脚只属于第一档，不能直接沿用到带功率版本。
+
+### 1.3 当前IOC审查结论
+
+| 项目 | 当前状态 | 处理结论 |
+| --- | --- | --- |
+| 170 MHz时钟树和ADC异步/4 | 正确 | 保持 |
+| HRTIM Master/A/B、10 kHz和500 ns初始死区 | 正确 | 保持，死区以后按实测调整 |
+| Master CMP2和ADC Trigger 1 | 正确 | 保持，采样位置以后按示波器调整 |
+| ADC1/ADC2规则组与双循环DMA | 正确 | 保持 |
+| DMA和ADC1_2中断 | 正确 | 保持当前优先级及共享ADC错误中断 |
+| PB10 Fault 3数字输入、低有效、无Blanking | 正确 | 保持，带功率前完成无CPU关断实测 |
+| OLED软件I2C和USART2 | 可用于调试 | 保持在主循环低速任务中使用 |
+| 固件包 | 当前为G4 V1.6.3且自动最新版 | 正式重新生成前改为V1.6.2并关闭自动最新版 |
+| HSE CSS | 当前IOC未记录启用 | 带功率前建议启用，并实现NMI安全关断 |
+| HRTIM C/D/E、ADC3/4/5 | 当前关闭 | 当前PFC工程保持关闭，联合工程再启用 |
+
+因此，不建议为了题目要求1~5修改当前PFC的PWM频率、ADC时钟、DMA通道或Fault路由。当前阶段真正需要的小幅CubeMX调整只有固件包固定以及带功率前启用CSS；人工启动、故障锁存、VAC同步、物理阈值保护和IWDG复位策略属于生成代码后的软件职责。
 
 ## 2. 引脚与外设总表
 
@@ -36,6 +86,7 @@
 | 驱动总故障 | HRTIM Fault 3 | PB10 | HRTIM1_FLT3 |
 | PFC 故障诊断 | GPIO EXTI | PE5 | PFC_NFAULT_DIAG |
 | VOFA | USART2 | PD5/PD6 | USART2_TX/RX |
+| OLED软件I2C | GPIO Output | PA15/PB7 | OLED_SCL/OLED_SDA |
 | 看门狗 | IWDG | 内部 LSI | IWDG |
 
 首版只为 ADC1、ADC2 启用两路独立 DMA。HRTIM C/D/E/F、ADC3/4/5、COMP1~7、DAC和普通 TIM 保持关闭。三相逆变器预留引脚不要分配给无关功能。
@@ -101,12 +152,21 @@ PE0 的 CubeMX 初始低电平只是软件措施，不能替代板级下拉。�
 | Pinout | PE5 | GPIO_EXTI5 |
 | GPIO Settings | User Label | PFC_NFAULT_DIAG |
 | GPIO mode | External Interrupt Mode with Falling edge trigger detection |
-| Pull-up/Pull-down | No pull，使用板级上拉 |
+| Pull-up/Pull-down | Pull-up，与当前IOC一致；正式硬件同时使用板级上拉 |
 | NVIC | EXTI line[9:5] interrupt | Enable，Priority 3 |
 
 PE5 只用于记录 PFC 驱动器故障来源。真正的快速关断由 PB10/HRTIM1_FLT3 完成。
 
-### 4.3 PB10：HRTIM1_FLT3
+### 4.3 PA15/PB7：OLED软件I2C
+
+| 引脚 | User Label | GPIO模式 | Pull | Speed |
+| --- | --- | --- | --- | --- |
+| PA15 | OLED_SCL | Output Push Pull | No pull | High |
+| PB7 | OLED_SDA | Output Open Drain | No pull | High |
+
+OLED仅用于低速调试显示，不参与采样、控制或保护。软件I2C刷新只能放在主循环低速任务中，禁止在ADC DMA、HRTIM或Fault中断中调用。SDA必须有外部上拉；若OLED模块已经自带上拉，不要重复并联过小阻值。
+
+### 4.4 PB10：HRTIM1_FLT3
 
 在 Pinout 选择 `PB10 > HRTIM1_FLT3`。PB10 不再配置 GPIO EXTI。
 
@@ -194,7 +254,7 @@ Timer A：
 | --- | --- | --- | --- |
 | Output Configuration | Polarity | High | High |
 | Output Configuration | Set Source 1 | Timer A Compare 1 | None |
-| Output Configuration | Reset Source 1 | None | None |
+| Output Configuration | Reset Source 1 | Timer A Compare 1 | None |
 | Output Configuration | Idle Level | Inactive | Inactive |
 | Output Configuration | Fault Level | Inactive | Inactive |
 | Output Configuration | Chopper Mode | Disable | Disable |
@@ -211,7 +271,7 @@ Timer B 使用相同设置，将事件替换为 Timer B Compare 1。
 | Burst Mode Roll-over Mode | Both |
 | ADC Roll-over Mode | Both |
 
-这里的 Valley Roll-over 是主输出在 Up-Down 周期中形成闭合波形的一部分，所以不能只检查 `ResetSource = NONE`。生成代码后必须同时看到对应的 `HAL_HRTIM_RollOverModeConfig()`；若 ROM/OUTROM 不是 Valley，则必须重新设计明确的 Set/Reset事件，不能直接沿用本表。
+当前IOC和生成代码中，TA1/TB1的Set与Reset均选择各自Timer Compare 1，并配合`OUTROM_VALLEY`和`ROM_VALLEY`区分Up-Down过程中的动作；TA2/TB2由Dead Time逻辑形成互补输出。生成代码后必须同时核对`HAL_HRTIM_WaveformOutputConfig()`和`HAL_HRTIM_RollOverModeConfig()`，不能只看引脚上已经出现PWM就认为Set/Reset路径正确。
 
 初始比较值与占空比的关系应根据示波器实测确认。按上述 Valley 模式，应用层先采用：
 
@@ -326,7 +386,6 @@ ADC1、ADC2共同设置：
 | Parameter Settings | Resolution | 12-bit | `ADC_RESOLUTION_12B` |
 | Parameter Settings | Data Alignment | Right | `ADC_DATAALIGN_RIGHT` |
 | Parameter Settings | Gain Compensation | 0 | `GainCompensation = 0` |
-| Parameter Settings | EOC Selection | End of sequence of conversion | `ADC_EOC_SEQ_CONV` |
 | Parameter Settings | Low Power Auto Wait | Disable | `LowPowerAutoWait = DISABLE` |
 | Parameter Settings | Continuous Conversion Mode | Disable | 每次HRTIM事件只启动一个规则序列 |
 | Parameter Settings | Discontinuous Conversion Mode | Disable | 规则序列不中断 |
@@ -345,6 +404,7 @@ ADC1、ADC2共同设置：
 | --- | --- | --- |
 | Parameter Settings | Scan Conversion Mode | Enable |
 | ADC Regular Conversion Mode | Number of Conversions | 2 |
+| Parameter Settings | EOC Selection | End of sequence of conversion |
 | Regular Rank 1 | Channel | ADC1_IN2 / PA1 / IPFC |
 | Regular Rank 1 | Single-ended/Differential | Single-ended |
 | Regular Rank 1 | Sampling Time | 24.5 Cycles |
@@ -369,6 +429,7 @@ VBUS随ADC1规则序列以10 kHz采样，但母线电压PI仍每10个PWM周期�
 | --- | --- | --- |
 | Parameter Settings | Scan Conversion Mode | Disable |
 | ADC Regular Conversion Mode | Number of Conversions | 1 |
+| Parameter Settings | EOC Selection | End of single conversion |
 | Regular Rank 1 | Channel | ADC2_IN6 / PC0 / VAC |
 | Regular Rank 1 | Single-ended/Differential | Single-ended |
 | Regular Rank 1 | Sampling Time | 24.5 Cycles |
@@ -385,7 +446,7 @@ static uint16_t adc2_dma[1];
 
 ### 6.4 DMA Settings
 
-分别在ADC1和ADC2的`DMA Settings`中点击`Add`。STM32G4使用DMA通道和DMAMUX请求映射；让CubeMX选择无冲突的DMA通道，并在文档或代码评审中记录实际生成的`DMAx_Channely`，不要在配置指南中预设固定通道号。
+分别在ADC1和ADC2的`DMA Settings`中点击`Add`。当前IOC已经无冲突地分配ADC1到`DMA1_Channel1`、ADC2到`DMA1_Channel2`；继续基于当前工程生成时应保持该映射。若后续联合工程因新增外设发生冲突，再让CubeMX重新分配并同步修改NVIC和软件说明。
 
 两路DMA均设置：
 
@@ -398,7 +459,7 @@ static uint16_t adc2_dma[1];
 | Memory Increment Address | Enable | `DMA_MINC_ENABLE` |
 | Peripheral Data Width | Half Word | `DMA_PDATAALIGN_HALFWORD` |
 | Memory Data Width | Half Word | `DMA_MDATAALIGN_HALFWORD` |
-| Priority | High或Very High | 不得低于普通遥测外设DMA |
+| Priority | High | 与当前IOC一致，不得低于普通遥测外设DMA |
 
 本方案使用两个独立DMA通道，不使用ADC双重模式，也不使用DMA双缓冲。STM32G474的Cortex-M4没有D-Cache，因此不需要额外执行Cache Clean/Invalidate。
 
@@ -413,10 +474,11 @@ __HAL_DMA_DISABLE_IT(hadc2.DMA_Handle, DMA_IT_HT);
 
 ### 6.5 NVIC与双ADC同步
 
-规则组DMA方案不使用ADC1/2的EOC/JEOC中断作为控制入口，因此`ADC1 and ADC2 global interrupt`默认关闭。启用CubeMX为两路DMA实际分配的DMA通道中断：
+规则组DMA方案不使用ADC1/2的EOC/JEOC中断作为控制入口，但`HAL_ADC_Start_DMA()`会启用ADC Overrun中断。因此当前IOC保持共享的`ADC1 and ADC2 global interrupt`开启是正确的，否则ADC发生Overrun后可能无法进入`HAL_ADC_ErrorCallback()`。快速控制入口仍然只能来自DMA完整传输回调。
 
 | 中断 | 抢占优先级 | 子优先级 | 用途 |
 | --- | ---: | ---: | --- |
+| ADC1 and ADC2 global interrupt | 1 | 0 | 处理ADC Overrun等错误，不运行控制算法 |
 | ADC2 DMA通道全局中断 | 1 | 0 | 发布VAC序列完成标志 |
 | ADC1 DMA通道全局中断 | 2 | 0 | 唯一10 kHz控制入口 |
 
@@ -451,6 +513,8 @@ static uint32_t control_heartbeat;
 11. 状态机检查通过后才启动HRTIM输出，最后拉高PE0。
 
 HRTIM未运行时，规则组只处于等待外部触发状态，不会因`HAL_ADC_Start_DMA()`自行连续转换。任一ADC/DMA启动失败时不得启动HRTIM计数器、PWM输出或Gate Enable。
+
+ADC硬件自校准与传感器零点标定是两件事。IPFC可在Gate关闭且确认无电流时统计零点；VAC若在MCU启动前已经接入50 Hz交流，不能使用任意长度的短窗口直接取平均作为中点。当前软件使用256点/25.6 ms只适合无交流输入的裸板测试。带功率版本应使用经过板级验证的中点标定值，或至少对完整的50 Hz整数周期取平均，并检查输入是否削顶和偏置是否处于合理范围。
 
 ## 7. USART2 与 VOFA
 
@@ -488,11 +552,14 @@ LSI误差较大，上板必须测量实际超时。IWDG应在其他外设和状�
 
 每100 ms检查控制心跳、ADC更新、HRTIM Fault、状态机超时和PE0状态，全部正常才刷新IWDG。
 
+当前裸板程序在故障时停止HRTIM和ADC，随后因心跳停止而不再喂狗；IWDG复位后程序又可能按开环启动流程重新开放MCU PWM引脚。PE0保持低时这仍属于无功率试波，但正式带功率版本不得采用这种自动重启行为。应在复位后读取并记录`IWDGRSTF`，默认保持PWM输出和PE0关闭，只有人工启动命令、自检通过和Fault输入恢复后才重新使能；或者在已确认Gate/PWM均关闭的故障锁存状态继续条件喂狗，以保留故障信息。
+
 ## 9. NVIC汇总
 
 | CubeMX中断 | 抢占优先级 | 子优先级 | 用途 |
 | --- | ---: | ---: | --- |
 | HRTIM1 fault global interrupt | 0 | 0 | 记录FLT3并拉低PE0 |
+| ADC1 and ADC2 global interrupt | 1 | 0 | ADC Overrun等错误处理 |
 | ADC2 DMA通道全局中断 | 1 | 0 | VAC规则序列完成标志 |
 | ADC1 DMA通道全局中断 | 2 | 0 | 唯一10 kHz快速控制入口 |
 | EXTI line[9:5] interrupt | 3 | 0 | PE5诊断故障 |
@@ -500,7 +567,7 @@ LSI误差较大，上板必须测量实际超时。IWDG应在其他外设和状�
 
 Fault的PWM关断由HRTIM硬件完成，不依赖`HRTIM1_FLT_IRQn`是否及时响应。ISR只负责软件收尾和记录。
 
-DMA中断名称取决于CubeMX实际分配结果，例如`DMA1 channel x global interrupt`。不要为了匹配本文示例而强行选择已经与其他外设冲突的DMA通道。`ADC1 and ADC2 global interrupt`在本方案中保持关闭，ADC错误由DMA回调、状态寄存器检查和100 ms安全监督共同检测。
+当前DMA中断分别为`DMA1_Channel1_IRQn`和`DMA1_Channel2_IRQn`。后续联合工程若由CubeMX重新分配通道，必须同步修改中断映射。`ADC1_2_IRQn`只处理ADC错误，不得在该中断路径中重复执行采样快照或控制算法。
 
 首版不配置普通TIM。1 ms、10 ms和100 ms任务由SysTick产生标志，实际任务在主循环执行。
 
@@ -513,6 +580,7 @@ DMA中断名称取决于CubeMX实际分配结果，例如`DMA1 channel x global 
 | A/B Up-Down | `HAL_HRTIM_WaveformTimerControl()` + `HRTIM_TIMERUPDOWNMODE_UPDOWN` |
 | Valley ROM | `HAL_HRTIM_RollOverModeConfig()`含`OUTROM_VALLEY`和`ROM_VALLEY` |
 | Compare 1 | A/B各自`HAL_HRTIM_WaveformCompareConfig()` |
+| TA1/TB1 Set和Reset | 两者均为各自Timer Compare 1，TA2/TB2由Dead Time互补生成 |
 | 500 ns死区 | `Prescaler DIV1`，Rising/Falling Value 85 |
 | 四路输出 | 四次`HAL_HRTIM_WaveformOutputConfig()` |
 | ADC Trigger 1 | `HAL_HRTIM_ADCTriggerConfig()`，Master CMP2 |
@@ -522,6 +590,7 @@ DMA中断名称取决于CubeMX实际分配结果，例如`DMA1 channel x global 
 | ADC1/2规则组外部触发 | `ADC_EXTERNALTRIG_HRTIM_TRG1`和上升沿触发 |
 | ADC1/2循环DMA | 两个独立DMA句柄、`DMA_CIRCULAR`和Half Word数据宽度 |
 | ADC12异步/4 | `ADC_CLOCK_ASYNC_DIV4` |
+| ADC错误中断 | `ADC1_2_IRQn`已启用，`HAL_ADC_Start_DMA()`启用`ADC_IT_OVR` |
 
 若CubeMX生成结果与表中不一致，先回到`.ioc`修正，避免直接编辑生成区掩盖配置错误。
 
@@ -529,7 +598,7 @@ DMA中断名称取决于CubeMX实际分配结果，例如`DMA1 channel x global 
 
 ## 11. 配置顺序
 
-1. 固定MCU、G4 V1.6.2和MDK-ARM；
+1. 固定MCU、G4 V1.6.2和MDK-ARM，关闭自动使用最新固件包；
 2. 核对8 MHz HSE和170 MHz时钟树；
 3. 配置PE0、PE5和PB10；
 4. 配置HRTIM Master、Timer A/B、Compare、Output、ROM和Dead Time；
@@ -537,11 +606,12 @@ DMA中断名称取决于CubeMX实际分配结果，例如`DMA1 channel x global 
 6. 配置Master CMP2和ADC Trigger 1；
 7. 配置ADC1/ADC2规则组，二者均选择HRTIM1 ADC Trigger 1上升沿触发；
 8. 分别添加ADC1和ADC2循环DMA，设置Half Word宽度和DMA中断优先级；
-9. 配置USART2；
-10. 配置IWDG和调试冻结；
-11. 检查Pinout冲突、Clock Configuration、DMA和NVIC；
-12. 生成代码并按第10节逐项核对；
-13. 完成无功率测试后才进入低压功率测试。
+9. 启用ADC1_2共享中断用于ADC Overrun错误处理；
+10. 配置USART2和软件I2C OLED GPIO；
+11. 配置IWDG和调试冻结；
+12. 检查Pinout冲突、Clock Configuration、DMA和NVIC；
+13. 生成代码并按第10节逐项核对；
+14. 完成无功率测试和Fault注入后才进入隔离限流的低压功率测试。
 
 ## 12. 验收清单
 
@@ -563,9 +633,11 @@ DMA中断名称取决于CubeMX实际分配结果，例如`DMA1 channel x global 
 - [ ] ADC1和ADC2规则组均使用HRTIM1 ADC Trigger 1上升沿触发。
 - [ ] ADC1转换数为2且Scan Enable；ADC2转换数为1。
 - [ ] 两个ADC均为Circular DMA、Half Word、Memory Increment Enable。
-- [ ] ADC2 DMA中断优先级1，ADC1 DMA中断优先级2，ADC1_2全局中断关闭。
+- [ ] ADC1_2共享中断开启且优先级1，只用于ADC错误处理。
+- [ ] DMA1_Channel2/ADC2中断优先级1，DMA1_Channel1/ADC1中断优先级2。
 - [ ] Master、Timer A/B、ADC Trigger 1、Dead Time和Fault 3配置未因ADC改造发生变化。
 - [ ] USART2为PD5/PD6、460800、8N1、无DMA和NVIC。
+- [ ] OLED软件I2C为PA15/SCL推挽输出和PB7/SDA开漏输出，不占用控制中断。
 - [ ] COMP、ADC3/4/5、HRTIM C/D/E/F和普通TIM保持关闭。
 - [ ] Pinout无黄色冲突。
 
@@ -584,7 +656,21 @@ DMA中断名称取决于CubeMX实际分配结果，例如`DMA1 channel x global 
 11. PB10拉低时不依赖CPU立即关闭四路PWM；
 12. PB10恢复后PWM不自动恢复；
 13. 停止控制心跳后IWDG在实测LSI误差范围内复位；
-14. IWDG复位后PE0和PWM仍保持关闭。
+14. IWDG复位后PE0和PWM仍保持关闭，未收到人工启动命令时不重新开放输出。
+
+### 12.3 题目要求1~5相关的后续验收
+
+以下内容不是当前裸板IOC能够单独完成的验收，但当前PFC配置必须为其提供稳定基础：
+
+1. 在36 V RMS、50 Hz输入下，PFC闭环建立目标母线，IPFC与VAC同相且无持续过零振荡；
+2. 使用功率分析仪测得输入功率因数不低于0.98；
+3. PFC和三相逆变器联合运行，在2.0 A阻性负载下输出线电压为32 V RMS；
+4. 三相输出支持60 Hz和30 Hz参数档，频率切换由状态机完成，不在运行中直接跳变相位；
+5. 60 Hz额定工况下输出线电压THD不大于2%；
+6. 60 Hz额定工况下整机效率不低于95%，直流辅助电源消耗计入输入功率；
+7. 记录母线纹波、IPFC峰值、器件温升和快速ISR最坏执行时间，确认没有以牺牲保护裕量换取效率或THD。
+
+输出THD主要由后续三相逆变器的PWM、LC滤波器、死区及其补偿、电压闭环和母线纹波共同决定。当前PFC的10 kHz配置先保持不变；是否提高逆变开关频率，应在后续联合仿真和损耗实测后单独决定。
 
 ## 13. 首版边界
 
@@ -595,3 +681,7 @@ DMA中断名称取决于CubeMX实际分配结果，例如`DMA1 channel x global 
 - USART2使用阻塞发送，不启用UART DMA或中断。
 - COMP不作为首版启动依赖，但DESAT/OCP和HRTIM Fault 3不可省略。
 - 500 ns死区、24.5 cycles采样时间和Master CMP2采样位置都必须通过实际硬件测量修正。
+- 当前IOC只覆盖单相PWM整流器，不等于题目要求1~5的完整CubeMX工程；三相逆变阶段仍需启用HRTIM C/D/E、三相电压/电流采样和独立Gate Enable。
+- 当前自由运行50 Hz SPWM只用于裸板观察。接入36 V交流源前必须改为VAC同步调制，并验证VAC/IPFC极性、输入丢失停机和软件限值。
+- 带功率前必须实现IPFC过流、VBUS过压/欠压、VAC丢失、ADC饱和/过期和状态超时保护；ADC码值大于4095的检查不能代替这些物理阈值。
+- 要求6的负载调整率和要求7的31~41 V输入调整率不属于本阶段目标，但硬件耐压、电流量程和保护范围不应因此只覆盖单一理想工作点。

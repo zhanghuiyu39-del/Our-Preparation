@@ -1,6 +1,7 @@
 #include "inv_measure.h"
 
 #include <stddef.h>
+#include <string.h>
 
 #include "inv_hrtim.h"
 
@@ -10,8 +11,8 @@
  * 本模块不包含QPR、CBSVPWM、OLED、VOFA或任何阻塞HAL调用。
  *
  * IU/IV/IW：三相逆变器输出电流采样值，换算后单位A。
- * VU/VV/VW：三相逆变器输出电压采样值，换算后单位V。
- * ADC3/4/5分别提供U/V/W相，每个ADC的Rank 1为电流、Rank 2为电压。
+ * VUV/VVW/VWU：三相三线输出线电压采样值，换算后单位V。
+ * ADC3/4/5的Rank 1分别为IU/IV/IW，Rank 2分别为VUV/VVW/VWU。
  */
 
 /* ======================== 板级标定参数 ======================== */
@@ -21,6 +22,11 @@
 #define INV_ADC_RAW_MAX        (4095U)
 /* 任一路尚未被共同消费的序列距离达到3帧时，判定三路DMA失步。 */
 #define INV_ADC_MAX_SKEW       (3U)
+/* 连续8帧靠近0或满量程判定输入贴轨，约0.8 ms内触发软件停机。 */
+#define INV_ADC_RAIL_LOW       (16U)
+#define INV_ADC_RAIL_HIGH      (4079U)
+#define INV_ADC_RAIL_FRAMES    (8U)
+#define INV_ADC_CHANNEL_COUNT  (6U)
 
 /*
  * 物理量=(原始值-零点)*比例。以下比例仅为低压联调占位值，
@@ -29,9 +35,9 @@
 #define INV_IU_A_PER_COUNT (0.001f)
 #define INV_IV_A_PER_COUNT (0.001f)
 #define INV_IW_A_PER_COUNT (0.001f)
-#define INV_VU_V_PER_COUNT (0.010f)
-#define INV_VV_V_PER_COUNT (0.010f)
-#define INV_VW_V_PER_COUNT (0.010f)
+#define INV_VUV_V_PER_COUNT (0.010f)
+#define INV_VVW_V_PER_COUNT (0.010f)
+#define INV_VWU_V_PER_COUNT (0.010f)
 
 /* ======================== DMA原始缓冲区 ======================== */
 /* DMA负责写入；中断和主循环应通过已发布快照读取，不直接拼接这些数组。 */
@@ -58,18 +64,20 @@ static uint32_t used_adc5_sequence;
 static uint32_t iu_offset_sum;
 static uint32_t iv_offset_sum;
 static uint32_t iw_offset_sum;
-static uint32_t vu_offset_sum;
-static uint32_t vv_offset_sum;
-static uint32_t vw_offset_sum;
+static uint32_t vuv_offset_sum;
+static uint32_t vvw_offset_sum;
+static uint32_t vwu_offset_sum;
 /* 已参与零点平均的同步帧数，达到INV_ADC_OFFSET_SAMPLES后停止累加。 */
 static uint16_t offset_sample_count;
 /* 六路零输入平均原始码，后续换算物理量时作为ADC零点扣除。 */
 static uint16_t iu_offset;
 static uint16_t iv_offset;
 static uint16_t iw_offset;
-static uint16_t vu_offset;
-static uint16_t vv_offset;
-static uint16_t vw_offset;
+static uint16_t vuv_offset;
+static uint16_t vvw_offset;
+static uint16_t vwu_offset;
+/* 每个通道独立累计连续贴轨帧数，避免不同通道交替贴轨造成误判。 */
+static uint8_t rail_frame_count[INV_ADC_CHANNEL_COUNT];
 
 /* 计算无符号序号相对已消费帧的距离，允许32位序号自然回绕。 */
 static uint32_t INV_Measure_SequenceDistance(uint32_t current, uint32_t used)
@@ -87,6 +95,20 @@ static uint8_t INV_Measure_SyncLost(uint32_t seq3, uint32_t seq4, uint32_t seq5)
     }
 
     return 0U;
+}
+
+/* 更新一个通道的连续贴轨计数，达到8帧时返回1。 */
+static uint8_t INV_Measure_UpdateRailCounter(uint16_t raw, uint8_t channel)
+{
+    if ((raw <= INV_ADC_RAIL_LOW) || (raw >= INV_ADC_RAIL_HIGH)) {
+        if (rail_frame_count[channel] < INV_ADC_RAIL_FRAMES) {
+            rail_frame_count[channel]++;
+        }
+    } else {
+        rail_frame_count[channel] = 0U;
+    }
+
+    return (rail_frame_count[channel] >= INV_ADC_RAIL_FRAMES) ? 1U : 0U;
 }
 
 /* 三路DMA均有新序列时，按固定Rank顺序发布一次完整测量帧。 */
@@ -122,11 +144,11 @@ static void INV_Measure_TryPublish(void)
     used_adc5_sequence = seq5;
 
     inv_measurement.iu_raw = INV_Adc3Dma[0];
-    inv_measurement.vu_raw = INV_Adc3Dma[1];
+    inv_measurement.vuv_raw = INV_Adc3Dma[1];
     inv_measurement.iv_raw = INV_Adc4Dma[0];
-    inv_measurement.vv_raw = INV_Adc4Dma[1];
+    inv_measurement.vvw_raw = INV_Adc4Dma[1];
     inv_measurement.iw_raw = INV_Adc5Dma[0];
-    inv_measurement.vw_raw = INV_Adc5Dma[1];
+    inv_measurement.vwu_raw = INV_Adc5Dma[1];
     inv_measurement.adc3_sequence = seq3;
     inv_measurement.adc4_sequence = seq4;
     inv_measurement.adc5_sequence = seq5;
@@ -136,9 +158,20 @@ static void INV_Measure_TryPublish(void)
     if ((inv_measurement.iu_raw > INV_ADC_RAW_MAX) ||
         (inv_measurement.iv_raw > INV_ADC_RAW_MAX) ||
         (inv_measurement.iw_raw > INV_ADC_RAW_MAX) ||
-        (inv_measurement.vu_raw > INV_ADC_RAW_MAX) ||
-        (inv_measurement.vv_raw > INV_ADC_RAW_MAX) ||
-        (inv_measurement.vw_raw > INV_ADC_RAW_MAX)) {
+        (inv_measurement.vuv_raw > INV_ADC_RAW_MAX) ||
+        (inv_measurement.vvw_raw > INV_ADC_RAW_MAX) ||
+        (inv_measurement.vwu_raw > INV_ADC_RAW_MAX)) {
+        INV_Measure_Trip(INV_FAULT_ADC_RANGE);
+        return;
+    }
+
+    /* 贴轨保护要求同一通道连续8帧异常，单次开关噪声不会立即锁存故障。 */
+    if ((INV_Measure_UpdateRailCounter(inv_measurement.iu_raw, 0U) != 0U) ||
+        (INV_Measure_UpdateRailCounter(inv_measurement.iv_raw, 1U) != 0U) ||
+        (INV_Measure_UpdateRailCounter(inv_measurement.iw_raw, 2U) != 0U) ||
+        (INV_Measure_UpdateRailCounter(inv_measurement.vuv_raw, 3U) != 0U) ||
+        (INV_Measure_UpdateRailCounter(inv_measurement.vvw_raw, 4U) != 0U) ||
+        (INV_Measure_UpdateRailCounter(inv_measurement.vwu_raw, 5U) != 0U)) {
         INV_Measure_Trip(INV_FAULT_ADC_RANGE);
         return;
     }
@@ -154,18 +187,18 @@ static void INV_Measure_TryPublish(void)
         iu_offset_sum += inv_measurement.iu_raw;
         iv_offset_sum += inv_measurement.iv_raw;
         iw_offset_sum += inv_measurement.iw_raw;
-        vu_offset_sum += inv_measurement.vu_raw;
-        vv_offset_sum += inv_measurement.vv_raw;
-        vw_offset_sum += inv_measurement.vw_raw;
+        vuv_offset_sum += inv_measurement.vuv_raw;
+        vvw_offset_sum += inv_measurement.vvw_raw;
+        vwu_offset_sum += inv_measurement.vwu_raw;
         offset_sample_count++;
 
         if (offset_sample_count == INV_ADC_OFFSET_SAMPLES) {
             iu_offset = (uint16_t)(iu_offset_sum / INV_ADC_OFFSET_SAMPLES);
             iv_offset = (uint16_t)(iv_offset_sum / INV_ADC_OFFSET_SAMPLES);
             iw_offset = (uint16_t)(iw_offset_sum / INV_ADC_OFFSET_SAMPLES);
-            vu_offset = (uint16_t)(vu_offset_sum / INV_ADC_OFFSET_SAMPLES);
-            vv_offset = (uint16_t)(vv_offset_sum / INV_ADC_OFFSET_SAMPLES);
-            vw_offset = (uint16_t)(vw_offset_sum / INV_ADC_OFFSET_SAMPLES);
+            vuv_offset = (uint16_t)(vuv_offset_sum / INV_ADC_OFFSET_SAMPLES);
+            vvw_offset = (uint16_t)(vvw_offset_sum / INV_ADC_OFFSET_SAMPLES);
+            vwu_offset = (uint16_t)(vwu_offset_sum / INV_ADC_OFFSET_SAMPLES);
             inv_measurement.offset_ready = 1U;
         }
         return;
@@ -178,12 +211,18 @@ static void INV_Measure_TryPublish(void)
     inv_measurement.iv = (float)signed_count * INV_IV_A_PER_COUNT;
     signed_count = (int32_t)inv_measurement.iw_raw - (int32_t)iw_offset;
     inv_measurement.iw = (float)signed_count * INV_IW_A_PER_COUNT;
-    signed_count = (int32_t)inv_measurement.vu_raw - (int32_t)vu_offset;
-    inv_measurement.vu = (float)signed_count * INV_VU_V_PER_COUNT;
-    signed_count = (int32_t)inv_measurement.vv_raw - (int32_t)vv_offset;
-    inv_measurement.vv = (float)signed_count * INV_VV_V_PER_COUNT;
-    signed_count = (int32_t)inv_measurement.vw_raw - (int32_t)vw_offset;
-    inv_measurement.vw = (float)signed_count * INV_VW_V_PER_COUNT;
+    signed_count = (int32_t)inv_measurement.vuv_raw - (int32_t)vuv_offset;
+    inv_measurement.vuv = (float)signed_count * INV_VUV_V_PER_COUNT;
+    signed_count = (int32_t)inv_measurement.vvw_raw - (int32_t)vvw_offset;
+    inv_measurement.vvw = (float)signed_count * INV_VVW_V_PER_COUNT;
+    signed_count = (int32_t)inv_measurement.vwu_raw - (int32_t)vwu_offset;
+    inv_measurement.vwu = (float)signed_count * INV_VWU_V_PER_COUNT;
+
+    /* 一致性量只供低压调试观察，标定阈值明确前不参与软件保护。 */
+    inv_measurement.current_sum = inv_measurement.iu + inv_measurement.iv +
+                                  inv_measurement.iw;
+    inv_measurement.line_voltage_sum = inv_measurement.vuv + inv_measurement.vvw +
+                                       inv_measurement.vwu;
 
     inv_measurement.valid = 1U;
 }
@@ -213,20 +252,21 @@ void INV_Measure_Init(void)
     iu_offset_sum = 0U;
     iv_offset_sum = 0U;
     iw_offset_sum = 0U;
-    vu_offset_sum = 0U;
-    vv_offset_sum = 0U;
-    vw_offset_sum = 0U;
+    vuv_offset_sum = 0U;
+    vvw_offset_sum = 0U;
+    vwu_offset_sum = 0U;
     offset_sample_count = 0U;
     iu_offset = 2048U;
     iv_offset = 2048U;
     iw_offset = 2048U;
-    vu_offset = 2048U;
-    vv_offset = 2048U;
-    vw_offset = 2048U;
+    vuv_offset = 2048U;
+    vvw_offset = 2048U;
+    vwu_offset = 2048U;
+    (void)memset(rail_frame_count, 0, sizeof(rail_frame_count));
 }
 
 /**
- * @brief  ADC3规则组DMA完成处理，表示本周期IU和VU两个Rank均已更新。
+ * @brief  ADC3规则组DMA完成处理，表示本周期IU和VUV两个Rank均已更新。
  * @note   由HAL_ADC_ConvCpltCallback()调用；函数随后尝试建立六通道同步快照。
  */
 void INV_Measure_OnAdc3Complete(void)
@@ -236,7 +276,7 @@ void INV_Measure_OnAdc3Complete(void)
 }
 
 /**
- * @brief  ADC4规则组DMA完成处理，表示本周期IV和VV两个Rank均已更新。
+ * @brief  ADC4规则组DMA完成处理，表示本周期IV和VVW两个Rank均已更新。
  * @note   由HAL_ADC_ConvCpltCallback()调用；函数随后尝试建立六通道同步快照。
  */
 void INV_Measure_OnAdc4Complete(void)
@@ -246,7 +286,7 @@ void INV_Measure_OnAdc4Complete(void)
 }
 
 /**
- * @brief  ADC5规则组DMA完成处理，表示本周期IW和VW两个Rank均已更新。
+ * @brief  ADC5规则组DMA完成处理，表示本周期IW和VWU两个Rank均已更新。
  * @note   由HAL_ADC_ConvCpltCallback()调用；函数随后尝试建立六通道同步快照。
  */
 void INV_Measure_OnAdc5Complete(void)

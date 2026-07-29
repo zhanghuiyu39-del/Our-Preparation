@@ -62,6 +62,8 @@ void Error_Handler(void);
 #define PFC_NFAULT_DIAG_EXTI_IRQn EXTI9_5_IRQn
 #define OLED_SCL_Pin GPIO_PIN_15
 #define OLED_SCL_GPIO_Port GPIOA
+#define PFC_START_KEY_Pin GPIO_PIN_0
+#define PFC_START_KEY_GPIO_Port GPIOD
 #define OLED_SDA_Pin GPIO_PIN_7
 #define OLED_SDA_GPIO_Port GPIOB
 #define PFC_GATE_EN_Pin GPIO_PIN_0

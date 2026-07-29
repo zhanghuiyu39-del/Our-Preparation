@@ -30,6 +30,7 @@
 #include "CBSVPWM.h"
 #include "inv_hrtim.h"
 #include "inv_measure.h"
+#include "inv_open_loop.h"
 #include "iwdg.h"
 #include "vofa.h"
 /* USER CODE END Includes */
@@ -43,40 +44,25 @@
 /* USER CODE BEGIN PD */
 
 /*
- * 本文件进行5 V直流母线下的三相开环逆变测试。默认输出50 Hz三相基波，
- * 目标相电压为1.0 Vrms，对应线电压约1.73 Vrms；实际桥臂引脚仍是10 kHz
+ * 本文件进行5 V直流母线下的三相三线开环逆变测试。默认输出60 Hz三相基波，
+ * 目标线电压为2.5 Vrms；实际桥臂引脚仍是10 kHz
  * 中心对齐PWM，只有经过负载/滤波后的基波分量接近正弦。
  *
- * 调制度计算：M = 2 * sqrt(2) * Vphase_rms / Vdc。
- * 当前Vdc=5 V、Vphase_rms=1 V，因此目标M约为0.566，低于0.90限幅。
+ * 调制度计算：M = 2 * Vphase_peak / Vdc，Vphase_peak=Vline_rms*sqrt(2/3)。
+ * 当前Vdc=5 V、Vline_rms=2.5 V，因此目标M约为0.816，低于0.90限幅。
  * 软件在1 s内把调制度从0平滑增加到目标值，避免Gate Enable开启后突加电压。
  */
 #define INV_OPEN_LOOP_DC_BUS_V             (5.0f)  /* 实际接到逆变桥直流侧的母线电压。 */
-#define INV_OPEN_LOOP_PHASE_RMS_V           (1.0f)  /* 目标相对中性点基波有效值。 */
+#define INV_OPEN_LOOP_LINE_RMS_V            (2.5f)  /* 目标U-V/V-W/W-U线电压有效值。 */
+#define INV_OPEN_LOOP_DEFAULT_FREQUENCY     (INV_FREQ_60HZ) /* 改为INV_FREQ_30HZ即可测试题目第5项。 */
 #define INV_OPEN_LOOP_ENABLE_POWER_STAGE    (1U)    /* 1=拉高PE1带低压功率级；0=仅测MCU PWM。 */
-#define INV_OPEN_LOOP_RAMP_TIME_MS          (1000U) /* 从0爬升到目标幅值的软启动时间。 */
-#define INV_OPEN_LOOP_CONTROL_HZ            (10000U)
-#define INV_OPEN_LOOP_SQRT2                 (1.4142135624f)
-#define INV_OPEN_LOOP_TARGET_MODULATION \
-  ((2.0f * INV_OPEN_LOOP_SQRT2 * INV_OPEN_LOOP_PHASE_RMS_V) / \
-   INV_OPEN_LOOP_DC_BUS_V)
-#define INV_OPEN_LOOP_RAMP_STEPS \
-  ((INV_OPEN_LOOP_CONTROL_HZ * INV_OPEN_LOOP_RAMP_TIME_MS) / 1000U)
-#define INV_OPEN_LOOP_MODULATION_STEP \
-  (INV_OPEN_LOOP_TARGET_MODULATION / (float)INV_OPEN_LOOP_RAMP_STEPS)
-
 #define INV_TEST_MODULATION_LIMIT      (0.90f)
 #define INV_TEST_MINIMUM_DC_V          (1.0f)
-#define INV_TEST_POINTS_PER_CYCLE      (200U)
 #define INV_TEST_OFFSET_TIMEOUT_MS     (200U)
 #define INV_TEST_SUPERVISOR_PERIOD_MS  (100U)
 #define INV_TEST_VOFA_PERIOD_MS        (10U)
 #define INV_TEST_OLED_PERIOD_MS        (100U)
-
-/* 旋转角增量Δθ为2*pi/200；预先写入常量，避免在10 kHz中断中调用三角函数。 */
-#define INV_TEST_SIN_DELTA             (0.0314107591f) //旋转角增量正弦: sin(1.8°)
-#define INV_TEST_COS_DELTA             (0.9995065604f) //旋转角增量余弦: cos(1.8°)
-#define INV_TEST_SQRT3_DIV2            (0.8660254038f) //√3 / 2
+#define INV_TEST_LIMITED_MAX_FRAMES    (100U) /* 连续限幅10 ms才锁存，允许瞬时舍入。 */
 
 /* USER CODE END PD */
 
@@ -99,29 +85,22 @@ static float vofa_data[VOFA_MAX_CHANNELS] = {0.0f};
 static uint32_t vofa_tx_ok_count = 0U;
 static uint32_t vofa_tx_error_count = 0U;
 
-/* CBSVPWM运行对象公开保留中间量，便于在Keil Watch中核对零序注入。 */
-static CBSVPWM_t inv_svpwm;
+/* 以下非static调试量可直接加入Keil Watch；ISR写入，调试器只读观察。 */
+/* CBSVPWM运行对象保留归一化、零序注入、限幅和最终占空比中间量。 */
+CBSVPWM_t inv_svpwm;
 
 /*
- * 正弦递推状态只在ADC DMA中断中更新。U相参考同时被主循环读取并发送VOFA，
- * 因而声明为volatile，避免编译器把主循环中的读取优化为不再更新的旧值。
+ * U相参考、当前频率、控制心跳和最坏周期数由10 kHz DMA控制路径更新。
+ * volatile只阻止编译器省略访问，不提供跨ISR结构体一致性；后台任务仍读取模块快照。
  */
-static float inv_sine_state = 0.0f;
-static float inv_cosine_state = 1.0f;
-static volatile float inv_sine_u = 0.0f;
-static uint16_t inv_phase_index = 0U;
-static volatile uint32_t inv_control_heartbeat = 0U;
+volatile float inv_sine_u = 0.0f;
+volatile uint16_t inv_output_frequency_hz = 60U;
+volatile uint32_t inv_control_heartbeat = 0U;
 static uint32_t inv_last_control_frame = 0U;
-/* 10 kHz控制ISR独占更新的当前调制度，从0软启动到TARGET_MODULATION。 */
-static volatile float inv_modulation_command = 0.0f;
+uint32_t inv_control_max_cycles = 0U;
+static uint32_t inv_limited_frames = 0U;
 /* 主循环在输出启动成功后置1；在此之前ISR只接收ADC快照，不推进软启动。 */
 static volatile uint8_t inv_outputs_started = 0U;
-
-/*
- * inv_sine_state/inv_cosine_state保存当前电角度的单位旋转向量；inv_sine_u是
- * 提供给主循环观测的U相参考。inv_phase_index记录当前200点周期位置；两个
- * heartbeat变量分别表示已完成的控制次数和最近已消费的测量帧号。
- */
 
 /* USER CODE END PV */
 
@@ -132,6 +111,7 @@ void SystemClock_Config(void);
 static void INV_TestOpenLoopStep(void);
 static HAL_StatusTypeDef INV_TestWaitForOffset(void);
 static HAL_StatusTypeDef INV_OpenLoopStartOutputs(void);
+static void INV_TestDwtInit(void);
 
 /* USER CODE END PFP */
 
@@ -218,27 +198,23 @@ static HAL_StatusTypeDef INV_OpenLoopStartOutputs(void)
 #endif
 }
 
+/** @brief 开启DWT周期计数器，用于测量10 kHz控制路径最坏执行时间。 */
+static void INV_TestDwtInit(void)
+{
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->CYCCNT = 0U;
+  DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
 /**
- * @brief 在一个新的六通道ADC同步帧到达后执行一次50 Hz开环CBSVPWM更新。
- *
- * 本函数运行于DMA中断上下文，不调用阻塞HAL函数。三相参考由一个单位正弦
- * 和单位余弦推导，U/V/W依次相差120度；递推每200点强制复位一次，防止
- * 单精度乘加误差长期累积。当前母线值仍是开环软件参数，不是ADC实测反馈；
- * 直流电源跌落时，交流输出也会按比例跌落。
+ * @brief 在一个新的六通道ADC同步帧到达后执行一次DDS和CBSVPWM更新。
+ * @note  本函数运行于DMA中断上下文，禁止阻塞HAL、OLED、USART和HAL_Delay()。
  */
 static void INV_TestOpenLoopStep(void)
 {
-  /* U/V/W为无量纲单位正弦，三者相位依次相差120度。 */
-  float sine_u;
-  float sine_v;
-  float sine_w;
-
-  /* 三相电压指令的峰值，单位V；由虚拟母线电压与调制度共同决定。 */
-  float voltage_amplitude;
-
-  /* 正余弦递推临时值：先同时算出，再回写状态，避免计算顺序相互污染。 */
-  float next_sine;
-  float next_cosine;
+  INV_OpenLoopOutput reference;
+  uint32_t start_cycles;
+  uint32_t elapsed_cycles;
 
   if ((INV_Measure_GetFault() != INV_FAULT_NONE) ||
       (inv_outputs_started == 0U))
@@ -246,34 +222,34 @@ static void INV_TestOpenLoopStep(void)
     return;
   }
 
-  /* 每个10 kHz控制周期增加一步，约1 s达到目标调制度，且不会越过目标值。 */
-  if (inv_modulation_command < INV_OPEN_LOOP_TARGET_MODULATION)
+  start_cycles = DWT->CYCCNT;
+  if (!INV_OpenLoop_Step(&reference))
   {
-    inv_modulation_command += INV_OPEN_LOOP_MODULATION_STEP;
-    if (inv_modulation_command > INV_OPEN_LOOP_TARGET_MODULATION)
-    {
-      inv_modulation_command = INV_OPEN_LOOP_TARGET_MODULATION;
-    }
+    INV_Measure_Trip(INV_FAULT_PARAMETER);
+    return;
   }
 
-  sine_u = inv_sine_state;
-  sine_v = (-0.5f * inv_sine_state) -
-           (INV_TEST_SQRT3_DIV2 * inv_cosine_state);
-  sine_w = (-0.5f * inv_sine_state) +
-           (INV_TEST_SQRT3_DIV2 * inv_cosine_state);
-  inv_sine_u = sine_u;
-
-  /* 相电压指令峰值=Vdc/2*M；M由软启动状态从0爬升到目标值。 */
-  voltage_amplitude = 0.5f * INV_OPEN_LOOP_DC_BUS_V * inv_modulation_command;
+  inv_sine_u = reference.sine_u;
+  inv_output_frequency_hz = reference.frequency_hz;
 
   if (CBSVPWM_Calc3Leg(&inv_svpwm,
-                       voltage_amplitude * sine_u,
-                       voltage_amplitude * sine_v,
-                       voltage_amplitude * sine_w,
+                       reference.vu_command,
+                       reference.vv_command,
+                       reference.vw_command,
                        INV_OPEN_LOOP_DC_BUS_V) == 0U)
   {
     INV_Measure_Trip(INV_FAULT_CBSVPWM);
     return;
+  }
+
+  if (inv_svpwm.limited != 0U) {
+    inv_limited_frames++;
+    if (inv_limited_frames >= INV_TEST_LIMITED_MAX_FRAMES) {
+      INV_Measure_Trip(INV_FAULT_CBSVPWM);
+      return;
+    }
+  } else {
+    inv_limited_frames = 0U;
   }
 
   if (INV_HRTIM_SetDuty(inv_svpwm.duty_u,
@@ -285,23 +261,9 @@ static void INV_TestOpenLoopStep(void)
   }
 
   inv_control_heartbeat++;
-  inv_phase_index++;
-
-  if (inv_phase_index >= INV_TEST_POINTS_PER_CYCLE)
-  {
-    /* 一个50 Hz周期结束后回到精确初值，避免旋转递推的幅值和相位漂移。 */
-    inv_phase_index = 0U;
-    inv_sine_state = 0.0f;
-    inv_cosine_state = 1.0f;
-  }
-  else
-  {
-    next_sine = (inv_sine_state * INV_TEST_COS_DELTA) +
-                (inv_cosine_state * INV_TEST_SIN_DELTA);
-    next_cosine = (inv_cosine_state * INV_TEST_COS_DELTA) -
-                  (inv_sine_state * INV_TEST_SIN_DELTA);
-    inv_sine_state = next_sine;
-    inv_cosine_state = next_cosine;
+  elapsed_cycles = DWT->CYCCNT - start_cycles;
+  if (elapsed_cycles > inv_control_max_cycles) {
+    inv_control_max_cycles = elapsed_cycles;
   }
 }
 
@@ -363,34 +325,34 @@ int main(void)
 
   /*
    * 固定标签只写一次，主循环后续只更新数字区域，避免整屏清除造成闪烁：
-   * IU/IV/IW为三相电流ADC原始码，VU/VV/VW为三相电压ADC原始码；
-   * S为10 kHz控制心跳，F为INV_FaultMask锁存故障位的十六进制值。
+   * IU/IV/IW为三相电流ADC原始码，UV/VW/WU为三相线电压ADC原始码；
+   * 第4行显示当前30/60 Hz频率和INV_FaultMask锁存故障位。
    */
   OLED_ShowString(1U, 1U, "IU:");
-  OLED_ShowString(1U, 9U, "VU:");
+  OLED_ShowString(1U, 9U, "UV:");
   OLED_ShowString(2U, 1U, "IV:");
-  OLED_ShowString(2U, 9U, "VV:");
+  OLED_ShowString(2U, 9U, "VW:");
   OLED_ShowString(3U, 1U, "IW:");
-  OLED_ShowString(3U, 9U, "VW:");
-  OLED_ShowString(4U, 1U, "S:");
-  OLED_ShowString(4U, 9U, "F:");
+  OLED_ShowString(3U, 9U, "WU:");
+  OLED_ShowString(4U, 1U, "F:");
+  OLED_ShowString(4U, 5U, "Hz");
+  OLED_ShowString(4U, 9U, "E:");
 
-  /* 清空逆变测量、DMA同步序列、零点累加器、软启动状态和历史故障。 */
+  /* 清空测量、DMA同步序列、零点累加器、DDS软启动状态和历史故障。 */
   INV_Measure_Init();
-  inv_modulation_command = 0.0f;
   inv_outputs_started = 0U;
+  inv_limited_frames = 0U;
+  INV_TestDwtInit();
 
   /*
-   * 上电前验证开环电压参数。目标调制度必须为正且不超过CBSVPWM限幅，
-   * 否则直接保持Gate Enable关闭，避免参数修改后产生不可实现的输出指令。
+   * 5 V母线和2.5 Vrms线电压由开环模块换算成约0.816调制度。
+   * 默认60 Hz；后续需要题目第5项时可调用SetFrequency(INV_FREQ_30HZ)，
+   * DDS只改变相位步进，不清零当前相位，因此切换时不会产生相位跳变。
    */
-  if ((INV_OPEN_LOOP_DC_BUS_V < INV_TEST_MINIMUM_DC_V) ||
-      (INV_OPEN_LOOP_PHASE_RMS_V <= 0.0f) ||
-      (INV_OPEN_LOOP_RAMP_STEPS == 0U) ||
-      (INV_OPEN_LOOP_TARGET_MODULATION <= 0.0f) ||
-      (INV_OPEN_LOOP_TARGET_MODULATION > INV_TEST_MODULATION_LIMIT))
+  INV_OpenLoop_Init(INV_OPEN_LOOP_DC_BUS_V, INV_OPEN_LOOP_LINE_RMS_V);
+  if (!INV_OpenLoop_SetFrequency(INV_OPEN_LOOP_DEFAULT_FREQUENCY))
   {
-    INV_Measure_Trip(INV_FAULT_PWM_COMMAND);
+    INV_Measure_Trip(INV_FAULT_PARAMETER);
     Error_Handler();
   }
 
@@ -525,20 +487,22 @@ int main(void)
     {
       /* 局部副本在短暂关中断期间一次性取得，后续串口发送不再访问ISR共享对象。 */
       INV_Measurement measurement;
+      INV_OpenLoopOutput reference;
 
       vofa_tick = HAL_GetTick();
       INV_Measure_GetSnapshot(&measurement);
+      INV_OpenLoop_GetSnapshot(&reference);
 
-      /* CH0显示50 Hz单位正弦，用来同时验证开环节拍和USART数据顺序。 */
-      vofa_data[0] = inv_sine_u;
+      /* CH0显示当前30/60 Hz单位正弦，用来同时验证DDS节拍和USART数据顺序。 */
+      vofa_data[0] = reference.sine_u;
 
-      /* CH1~CH6依次显示三个电流和三个相电压ADC原始码，便于核对Rank。 */
+      /* CH1~CH6依次显示三个电流和三路线电压ADC原始码，便于核对Rank。 */
       vofa_data[1] = (float)measurement.iu_raw;
       vofa_data[2] = (float)measurement.iv_raw;
       vofa_data[3] = (float)measurement.iw_raw;
-      vofa_data[4] = (float)measurement.vu_raw;
-      vofa_data[5] = (float)measurement.vv_raw;
-      vofa_data[6] = (float)measurement.vw_raw;
+      vofa_data[4] = (float)measurement.vuv_raw;
+      vofa_data[5] = (float)measurement.vvw_raw;
+      vofa_data[6] = (float)measurement.vwu_raw;
       vofa_data[7] = (float)measurement.fault_bits;
 
       if (VOFA_Send(&huart2, vofa_data, VOFA_MAX_CHANNELS) == HAL_OK)
@@ -609,6 +573,7 @@ int main(void)
     {
       /* OLED只显示此处取得的完整快照，不直接读取DMA正在更新的原始数组。 */
       INV_Measurement measurement;
+      INV_OpenLoopOutput reference;
 
       /* 主循环偶尔延迟时不连续补刷旧帧，而是以当前时刻作为下一周期基准。 */
       oled_tick = HAL_GetTick();
@@ -618,24 +583,25 @@ int main(void)
        * INV_Adc3Dma/INV_Adc4Dma/INV_Adc5Dma数组，避免显示半更新数据。
        */
       INV_Measure_GetSnapshot(&measurement);
+      INV_OpenLoop_GetSnapshot(&reference);
 
       /*
        * 六路ADC为12位原始码，固定显示4位十进制数；即使前导位为0，
        * 数字区域宽度也保持不变，不需要周期性OLED_Clear()。
        */
       OLED_ShowNum(1U, 4U, measurement.iu_raw, 4U);
-      OLED_ShowNum(1U, 12U, measurement.vu_raw, 4U);
+      OLED_ShowNum(1U, 12U, measurement.vuv_raw, 4U);
       OLED_ShowNum(2U, 4U, measurement.iv_raw, 4U);
-      OLED_ShowNum(2U, 12U, measurement.vv_raw, 4U);
+      OLED_ShowNum(2U, 12U, measurement.vvw_raw, 4U);
       OLED_ShowNum(3U, 4U, measurement.iw_raw, 4U);
-      OLED_ShowNum(3U, 12U, measurement.vw_raw, 4U);
+      OLED_ShowNum(3U, 12U, measurement.vwu_raw, 4U);
 
       /*
-       * 控制心跳取模后固定为5位，便于确认10 kHz控制入口持续运行；
-       * 故障位使用两位十六进制显示，正常状态为00，故障恢复后不自动清零。
+       * 输出频率固定显示两位十进制数；故障位用三位十六进制显示，
+       * 可覆盖新增的CSS时钟故障位，正常状态为000且故障后不自动清零。
        */
-      OLED_ShowNum(4U, 3U, inv_control_heartbeat % 100000U, 5U);
-      OLED_ShowHexNum(4U, 11U, measurement.fault_bits, 2U);
+      OLED_ShowNum(4U, 3U, reference.frequency_hz, 2U);
+      OLED_ShowHexNum(4U, 11U, measurement.fault_bits, 3U);
     }
 
   }
@@ -813,6 +779,8 @@ void Error_Handler(void)
    */
   HAL_GPIO_WritePin(PFC_GATE_EN_GPIO_Port, PFC_GATE_EN_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(INV_GATE_EN_GPIO_Port, INV_GATE_EN_Pin, GPIO_PIN_RESET);
+  INV_OpenLoop_Reset();
+  CBSVPWM_Reset(&inv_svpwm);
   INV_HRTIM_StopAll();
   __disable_irq();
   while (1)

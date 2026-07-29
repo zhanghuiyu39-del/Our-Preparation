@@ -12,10 +12,10 @@ extern "C" {
  * DMA数组只供HAL DMA写入；应用层应使用INV_Measure_GetSnapshot()读取一致数据。
  */
 
-/* DMA数组顺序必须与01.ioc的ADC3/4/5 Regular Rank完全一致。 */
-extern volatile uint16_t INV_Adc3Dma[2]; /* Rank1=IU，Rank2=VU。 */
-extern volatile uint16_t INV_Adc4Dma[2]; /* Rank1=IV，Rank2=VV。 */
-extern volatile uint16_t INV_Adc5Dma[2]; /* Rank1=IW，Rank2=VW。 */
+/* DMA数组顺序必须与02OpenLoop.ioc的ADC3/4/5 Regular Rank完全一致。 */
+extern volatile uint16_t INV_Adc3Dma[2]; /* Rank1=IU，Rank2=VUV。 */
+extern volatile uint16_t INV_Adc4Dma[2]; /* Rank1=IV，Rank2=VVW。 */
+extern volatile uint16_t INV_Adc5Dma[2]; /* Rank1=IW，Rank2=VWU。 */
 
 /* 故障位使用位掩码，可同时记录首发故障和后续故障。 */
 typedef enum
@@ -27,7 +27,9 @@ typedef enum
     INV_FAULT_HRTIM       = 1U << 3, /* HRTIM计数器或输出启动失败。 */
     INV_FAULT_DRIVER      = 1U << 4, /* 驱动器nFAULT、FLT3或安全GPIO异常。 */
     INV_FAULT_PWM_COMMAND = 1U << 5, /* 占空比/比较值非法或写入失败。 */
-    INV_FAULT_CBSVPWM     = 1U << 6  /* CBSVPWM初始化或本周期计算失败。 */
+    INV_FAULT_CBSVPWM     = 1U << 6, /* CBSVPWM初始化或本周期计算失败。 */
+    INV_FAULT_PARAMETER   = 1U << 7, /* 开环母线、线电压或30/60 Hz参数非法。 */
+    INV_FAULT_CLOCK       = 1U << 8  /* CSS检测到HSE时钟故障。 */
 } INV_FaultMask;
 
 typedef struct
@@ -36,17 +38,21 @@ typedef struct
     uint16_t iu_raw;
     uint16_t iv_raw;
     uint16_t iw_raw;
-    uint16_t vu_raw;
-    uint16_t vv_raw;
-    uint16_t vw_raw;
+    uint16_t vuv_raw;
+    uint16_t vvw_raw;
+    uint16_t vwu_raw;
 
     /* 完成零点扣除和比例换算后的物理量。 */
     float iu; /* U相电流，单位A。 */
     float iv; /* V相电流，单位A。 */
     float iw; /* W相电流，单位A。 */
-    float vu; /* U相输出电压，单位V。 */
-    float vv; /* V相输出电压，单位V。 */
-    float vw; /* W相输出电压，单位V。 */
+    float vuv; /* U-V线电压，单位V。 */
+    float vvw; /* V-W线电压，单位V。 */
+    float vwu; /* W-U线电压，单位V。 */
+
+    /* 三相三线一致性诊断量；标定完成后更新，首版只观测、不作为关断阈值。 */
+    float current_sum;      /* IU+IV+IW，单位A，理想三线负载下接近0。 */
+    float line_voltage_sum; /* VUV+VVW+VWU，单位V，按定义应接近0。 */
 
     /* 三路DMA序列用于诊断，fast_heartbeat每个完整六通道帧只增加一次。 */
     uint32_t adc3_sequence;

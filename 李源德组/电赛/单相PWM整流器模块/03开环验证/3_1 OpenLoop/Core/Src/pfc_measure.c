@@ -1,83 +1,69 @@
 #include "pfc_measure.h"
 #include "pfc_hrtim.h"
+#include <math.h>
 
 /*
- * 本文件只负责“ADC原始值 -> 同周期快照 -> 物理量”的处理，不负责PI/PR控制。
+ * 本模块负责“ADC原始值 -> 同周期快照 -> 物理量与工频统计”，不负责状态机和调制。
  * 数据流如下：
- * HRTIM Trigger1 -> ADC1/ADC2 -> DMA缓冲区 -> HAL_ADC_ConvCpltCallback()
- *                -> 本模块建立快照 -> 主循环/OLED读取
+ * HRTIM Master CMP2 -> ADC1/ADC2 Regular -> Circular DMA
+ *                    -> ADC2发布VAC序列号
+ *                    -> ADC1核对序列号并发布完整PFC_Measurement
+ *                    -> 10 kHz控制入口和主循环读取快照
  *
- * ADC1需要转换两个Rank，因此完成时间比只有一个Rank的ADC2稍晚。
- * ADC2先更新时间序号，ADC1完成后再读取三路数据，可避免把不同PWM周期的数据混用。
- *
- * IPFC：PFC 电感电流或输入电流的 ADC 采样值。
- * VAC：交流输入电压采样值。 
- * VBUS：PFC 升压后的直流母线电压采样值。
+ * ADC1 DMA缓冲区由DMA写，ADC1完成ISR读；pfc_measurement由ADC1完成ISR写，主循环通过
+ * PFC_Measure_GetSnapshot()读。volatile只禁止编译器缓存，不保证结构体复制的原子性。
  */
+#define PFC_ADC_RAW_MAX          4095U
+#define PFC_ADC_RAIL_MARGIN      4U
+#define PFC_RMS_WINDOW_SAMPLES   200U  /* 10 kHz下对应一个标称50 Hz周期。 */
+#define PFC_ZERO_HYSTERESIS_V    0.20f
 
-/* ======================== 板级标定参数 ======================== */
-#define PFC_ADC_OFFSET_SAMPLES   256U   /* 10 kHz下约25.6 ms，用于计算IPFC/VAC零点。 */
-#define PFC_ADC_RAW_MAX          4095U  /* 12位ADC允许的最大原始码值。 */
-
-/*
- * 物理量 = (ADC原始值 - 零点) * 每码值对应的物理量。
- * 以下数值只是低压测试占位值，功率板确定后必须由分压器和传感器参数重新计算。
- */
-#define PFC_IPFC_A_PER_COUNT     0.001f /* IPFC：每个ADC码值对应的安培数。 */
-#define PFC_VAC_V_PER_COUNT      0.010f /* VAC：每个ADC码值对应的伏特数。 */
-#define PFC_VBUS_V_PER_COUNT     0.010f /* VBUS：单极性采样，不减去中点零偏。 */
-
-/* ======================== DMA原始缓冲区 ======================== */
-/*
- * 这两个数组由DMA写入，CPU只读取，所以必须使用volatile。
- * 数组顺序必须与CubeMX中的Regular Rank保持完全一致：
- * ADC1[0]=Rank1/IPFC，ADC1[1]=Rank2/VBUS；ADC2[0]=Rank1/VAC。
- */
+/* DMA固定Rank顺序：ADC1[0]=IPFC、ADC1[1]=VBUS、ADC2[0]=VAC，不允许与CubeMX脱节。 */
 volatile uint16_t PFC_Adc1Dma[2] = {0U, 0U};
 volatile uint16_t PFC_Adc2Dma[1] = {0U};
 
-/* ======================== 模块内部状态 ======================== */
-static volatile PFC_Measurement pfc_measurement = {0}; /* ISR发布，主循环通过快照函数读取。 */
-static volatile uint32_t adc2_sequence = 0U;           /* ADC2每完成一次DMA就加1。 */
-static uint32_t last_adc2_sequence = 0U;               /* ADC1上次已使用的ADC2序号。 */
-
-/* 下面三个量只在上电零点标定阶段使用。 */
-static uint32_t ipfc_offset_sum = 0U;
-static uint32_t vac_offset_sum = 0U;
-static uint16_t offset_sample_count = 0U;
-static uint16_t ipfc_offset = 2048U; /* 标定前先给中点默认值，标定完成后会覆盖。 */
-static uint16_t vac_offset = 2048U;
-
-static uint8_t sync_miss_count = 0U; /* 连续3次没有等到新的ADC2数据才报错，避免偶发时序误判。 */
+/* ISR发布的测量快照；主循环不得直接访问DMA数组或该静态对象。 */
+static volatile PFC_Measurement pfc_measurement = {0};
+static const PFC_Params *pfc_params = 0;       /* 初始化后只读，生命周期覆盖整个程序运行期。 */
+static volatile uint32_t adc2_sequence = 0U;  /* ADC2 DMA完成ISR写，ADC1 DMA完成ISR读。 */
+static uint32_t last_adc2_sequence = 0U;
+static uint32_t samples_since_cross = 0U;      /* 两次VAC正向过零之间的10 kHz样本数。 */
+static float vac_square_sum = 0.0f;            /* 200点RMS窗口平方和，仅ADC1完成ISR更新。 */
+static float ipfc_square_sum = 0.0f;
+static uint16_t rms_sample_count = 0U;
+static int8_t vac_sign_state = -1;             /* 带滞回的VAC符号状态，-1等待正向过零。 */
+static uint8_t sync_miss_count = 0U;
 
 /**
- * @brief  清空DMA缓冲区、采样序号、故障状态和零点标定累加器。
- * @note   在HAL_ADC_Start_DMA()之前调用一次；当前main.c在ADC校准前调用。
+ * @brief  初始化DMA缓冲区、同步序列和测量统计状态。
+ * @param  params 常驻只读参数地址，函数返回后仍必须保持有效。
+ * @note   在HAL_ADC_Start_DMA()之前调用；本函数不校准ADC、不启动DMA，也不开放PWM/Gate。
  */
-void PFC_Measure_Init(void)
+void PFC_Measure_Init(const PFC_Params *params)
 {
-    /* DMA启动前清零，避免OLED或调试器先看到上一次运行残留的数据。 */
     PFC_Adc1Dma[0] = 0U;
     PFC_Adc1Dma[1] = 0U;
     PFC_Adc2Dma[0] = 0U;
-
-    /* 复位对外发布的完整测量结果。 */
     pfc_measurement = (PFC_Measurement){0};
-
-    /* 复位ADC同步判断和自动零点标定状态。 */
+    pfc_params = params;
     adc2_sequence = 0U;
     last_adc2_sequence = 0U;
-    ipfc_offset_sum = 0U;
-    vac_offset_sum = 0U;
-    offset_sample_count = 0U;
-    ipfc_offset = 2048U;
-    vac_offset = 2048U;
+    samples_since_cross = 0U;
+    vac_square_sum = 0.0f;
+    ipfc_square_sum = 0.0f;
+    rms_sample_count = 0U;
+    vac_sign_state = -1;
     sync_miss_count = 0U;
+
+    if (params != 0)
+    {
+        pfc_measurement.offset_ready = 1U;
+    }
 }
 
 /**
- * @brief  ADC2规则组DMA完成处理，表示本周期的VAC已经更新。
- * @note   由HAL_ADC_ConvCpltCallback()调用；这里只加序号，不做换算和OLED显示。
+ * @brief  发布ADC2本周期VAC已经完成的信息。
+ * @note   仅由ADC2 DMA完整传输回调调用；只推进序列号，不执行浮点换算和控制。
  */
 void PFC_Measure_OnAdc2Complete(void)
 {
@@ -85,20 +71,18 @@ void PFC_Measure_OnAdc2Complete(void)
 }
 
 /**
- * @brief  ADC1规则组DMA完成处理，建立一次IPFC/VBUS/VAC同步快照。
- * @note   本函数运行在DMA中断中，后续PR电流环也应从这里每100 us执行一次。
+ * @brief  核对ADC2序列并发布一次IPFC/VBUS/VAC一致性快照。
+ * @note   由ADC1 DMA完整传输回调以10 kHz调用；包含换算、RMS累计、过零和快速保护。
+ *         不得在这里调用OLED、阻塞USART或HAL_Delay()。
  */
 void PFC_Measure_OnAdc1Complete(void)
 {
-    /* 32位变量在Cortex-M4上可一次读完，先保存局部副本避免处理中途再次变化。 */
     uint32_t current_adc2_sequence = adc2_sequence;
+    uint32_t minimum_period_samples;
+    uint32_t maximum_period_samples;
     int32_t ipfc_count;
     int32_t vac_count;
 
-    /*
-     * ADC1完成时，ADC2序号必须已经前进。
-     * 若序号没变，说明VAC仍是上一个PWM周期的数据，本次数据不能用于控制。
-     */
     if (current_adc2_sequence == last_adc2_sequence)
     {
         if (++sync_miss_count >= 3U)
@@ -110,96 +94,134 @@ void PFC_Measure_OnAdc1Complete(void)
 
     sync_miss_count = 0U;
     last_adc2_sequence = current_adc2_sequence;
-
-    /* DMA已经完成整个规则序列，此时按固定Rank顺序复制三路原始值。 */
     pfc_measurement.ipfc_raw = PFC_Adc1Dma[0];
     pfc_measurement.vbus_raw = PFC_Adc1Dma[1];
     pfc_measurement.vac_raw = PFC_Adc2Dma[0];
     pfc_measurement.adc1_sequence++;
     pfc_measurement.adc2_sequence = current_adc2_sequence;
 
-    /* 12位ADC正常数据只能是0~4095，超出范围说明配置或内存数据异常。 */
-    if ((pfc_measurement.ipfc_raw > PFC_ADC_RAW_MAX) ||
+    if ((pfc_params == 0) ||
+        (pfc_measurement.ipfc_raw > PFC_ADC_RAW_MAX) ||
         (pfc_measurement.vbus_raw > PFC_ADC_RAW_MAX) ||
-        (pfc_measurement.vac_raw > PFC_ADC_RAW_MAX))
+        (pfc_measurement.vac_raw > PFC_ADC_RAW_MAX) ||
+        (pfc_measurement.ipfc_raw <= PFC_ADC_RAIL_MARGIN) ||
+        (pfc_measurement.ipfc_raw >= (PFC_ADC_RAW_MAX - PFC_ADC_RAIL_MARGIN)) ||
+        (pfc_measurement.vac_raw <= PFC_ADC_RAIL_MARGIN) ||
+        (pfc_measurement.vac_raw >= (PFC_ADC_RAW_MAX - PFC_ADC_RAIL_MARGIN)))
     {
         PFC_Measure_Trip(PFC_FAULT_ADC_RANGE);
         return;
     }
 
-    /*
-     * 上电后的前256组数据只用于求零点，不发布有效物理量。
-     * 此时必须保持无交流输入、无负载电流、Gate Enable关闭。
-     */
-    if (offset_sample_count < PFC_ADC_OFFSET_SAMPLES)
-    {
-        ipfc_offset_sum += pfc_measurement.ipfc_raw;
-        vac_offset_sum += pfc_measurement.vac_raw;
-        offset_sample_count++;
+    ipfc_count = (int32_t)pfc_measurement.ipfc_raw - (int32_t)pfc_params->ipfc_zero_count;
+    vac_count = (int32_t)pfc_measurement.vac_raw - (int32_t)pfc_params->vac_zero_count;
+    pfc_measurement.ipfc = (float)(ipfc_count * pfc_params->ipfc_polarity) * pfc_params->ipfc_amp_per_count;
+    pfc_measurement.vac = (float)(vac_count * pfc_params->vac_polarity) * pfc_params->vac_volt_per_count;
+    pfc_measurement.vbus = (float)pfc_measurement.vbus_raw * pfc_params->vbus_volt_per_count;
 
-        if (offset_sample_count == PFC_ADC_OFFSET_SAMPLES)
+    /* 每200点才执行一次sqrtf，避免在10 kHz ISR中每周期开平方。 */
+    vac_square_sum += pfc_measurement.vac * pfc_measurement.vac;
+    ipfc_square_sum += pfc_measurement.ipfc * pfc_measurement.ipfc;
+    rms_sample_count++;
+    if (rms_sample_count >= PFC_RMS_WINDOW_SAMPLES)
+    {
+        pfc_measurement.vac_rms = sqrtf(vac_square_sum / (float)PFC_RMS_WINDOW_SAMPLES);
+        pfc_measurement.ipfc_rms = sqrtf(ipfc_square_sum / (float)PFC_RMS_WINDOW_SAMPLES);
+        vac_square_sum = 0.0f;
+        ipfc_square_sum = 0.0f;
+        rms_sample_count = 0U;
+    }
+
+    /* 允许45~55 Hz；样本边界由实际控制频率计算，便于后续修改控制周期。 */
+    minimum_period_samples = (uint32_t)(pfc_params->control_frequency / 55.0f);
+    maximum_period_samples = (uint32_t)(pfc_params->control_frequency / 45.0f) + 1U;
+    samples_since_cross++;
+    if (samples_since_cross > maximum_period_samples)
+    {
+        pfc_measurement.vac_locked = 0U;
+    }
+    if (pfc_measurement.vac < -PFC_ZERO_HYSTERESIS_V)
+    {
+        vac_sign_state = -1;
+    }
+    else if ((pfc_measurement.vac > PFC_ZERO_HYSTERESIS_V) && (vac_sign_state < 0))
+    {
+        if ((samples_since_cross >= minimum_period_samples) &&
+            (samples_since_cross <= maximum_period_samples))
         {
-            /* 使用平均值抑制单次ADC噪声，得到双极性采样前端的中点。 */
-            ipfc_offset = (uint16_t)(ipfc_offset_sum / PFC_ADC_OFFSET_SAMPLES);
-            vac_offset = (uint16_t)(vac_offset_sum / PFC_ADC_OFFSET_SAMPLES);
-            pfc_measurement.offset_ready = 1U;
+            pfc_measurement.vac_frequency_hz = pfc_params->control_frequency / (float)samples_since_cross;
+            pfc_measurement.vac_zero_cross_sequence++;
+            pfc_measurement.vac_locked = 1U;
         }
+        else if (pfc_measurement.vac_zero_cross_sequence != 0U)
+        {
+            pfc_measurement.vac_locked = 0U;
+        }
+        samples_since_cross = 0U;
+        vac_sign_state = 1;
+    }
+
+    if ((PFC_Params_IsValid(pfc_params) != 0U) &&
+        ((pfc_measurement.ipfc > pfc_params->current_trip) ||
+         (pfc_measurement.ipfc < -pfc_params->current_trip)))
+    {
+        PFC_Measure_Trip(PFC_FAULT_OVERCURRENT);
         return;
     }
 
-    /* IPFC和VAC以中点为0，因此先转为有符号差值；VBUS是单极性量，不减零点。 */
-    ipfc_count = (int32_t)pfc_measurement.ipfc_raw - (int32_t)ipfc_offset;
-    vac_count = (int32_t)pfc_measurement.vac_raw - (int32_t)vac_offset;
-    pfc_measurement.ipfc = (float)ipfc_count * PFC_IPFC_A_PER_COUNT;
-    pfc_measurement.vac = (float)vac_count * PFC_VAC_V_PER_COUNT;
-    pfc_measurement.vbus = (float)pfc_measurement.vbus_raw * PFC_VBUS_V_PER_COUNT;
+    if ((PFC_Params_IsValid(pfc_params) != 0U) &&
+        (pfc_measurement.vbus > pfc_params->vbus_overvoltage_trip))
+    {
+        PFC_Measure_Trip(PFC_FAULT_VBUS_OV);
+        return;
+    }
 
-    /* 心跳每个有效采样周期加1，正常情况下每秒约增加10000。 */
     pfc_measurement.fast_heartbeat++;
     pfc_measurement.valid = 1U;
 }
 
-/**
- * @brief  HAL报告ADC或DMA错误时的统一入口。
- */
+/** @brief HAL报告ADC/DMA错误时锁存PFC_FAULT_ADC_ERROR并关闭功率输出。 */
 void PFC_Measure_AdcError(void)
 {
     PFC_Measure_Trip(PFC_FAULT_ADC_ERROR);
 }
 
 /**
- * @brief  锁存故障并立即关闭Gate Enable、HRTIM输出和采样时基。
- * @param  fault_bits 可一次传入一个或多个PFC_FaultMask位。
- * @note   使用“或”运算保留历史故障；本函数不会自动清除故障或重新启动PWM。
+ * @brief  锁存一个或多个故障位并执行软件安全关断。
+ * @param  fault_bits PFC_FaultMask按位或组合，历史故障不会被后续调用覆盖。
+ * @note   可从ISR或主循环调用；关闭PE0和PWM输出，但保留HRTIM计数器继续触发ADC。
  */
 void PFC_Measure_Trip(uint32_t fault_bits)
 {
     pfc_measurement.fault_bits |= fault_bits;
     pfc_measurement.valid = 0U;
-    PFC_HRTIM_StopAll();
+    PFC_HRTIM_StopPower();
 }
 
 /**
- * @brief  将ISR维护的测量结果复制给主循环。
- * @param  measurement 主循环提供的目标结构体地址。
- * @note   复制期间短暂关中断，防止结构体复制到一半时被DMA回调改写。
- *         当前工程只允许在主循环调用，因此复制完成后直接恢复中断。
+ * @brief  将ISR发布的完整测量结果复制给调用者。
+ * @param  measurement 接收快照的非空地址。
+ * @note   临界区保存并恢复PRIMASK，因此主循环和ISR均可调用，不会错误地提前开中断。
  */
 void PFC_Measure_GetSnapshot(PFC_Measurement *measurement)
 {
+    uint32_t primask;
+
     if (measurement == 0)
     {
         return;
     }
 
+    primask = __get_PRIMASK();
     __disable_irq();
     *measurement = pfc_measurement;
-    __enable_irq();
+    if (primask == 0U)
+    {
+        __enable_irq();
+    }
 }
 
-/**
- * @brief  返回当前锁存故障位，0表示没有软件故障。
- */
+/** @brief 返回当前锁存故障位；0表示尚未发生软件故障。 */
 uint32_t PFC_Measure_GetFault(void)
 {
     return pfc_measurement.fault_bits;

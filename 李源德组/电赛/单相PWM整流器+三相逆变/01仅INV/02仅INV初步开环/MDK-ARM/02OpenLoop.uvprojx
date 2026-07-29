@@ -395,6 +395,11 @@
               <FilePath>../Core/Src/CBSVPWM.c</FilePath>
             </File>
             <File>
+              <FileName>inv_open_loop.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/inv_open_loop.c</FilePath>
+            </File>
+            <File>
               <FileName>inv_hrtim.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/inv_hrtim.c</FilePath>
