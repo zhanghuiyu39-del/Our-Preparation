@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : Main program body
+  * @brief          : 5 V单相PWM整流器开环验证主程序
   ******************************************************************************
   * @attention
   *
@@ -15,6 +15,17 @@
   *
   ******************************************************************************
   */
+/*
+ * 本文件负责CubeMX外设初始化、PFC应用模块装配、低速显示/通信调度以及HAL回调转发，
+ * 不在主循环中直接计算PWM调制，也不直接解释DMA缓冲区中的半更新数据。
+ *
+ * 启动数据流：GPIO安全态 -> ADC校准/AWD -> 双ADC循环DMA -> HRTIM采样时基 -> IWDG。
+ * 运行数据流：HRTIM TRG1 -> ADC/DMA回调 -> 测量快照/10 kHz控制；主循环只处理
+ * 1 ms状态机、10 ms VOFA、100 ms OLED和100 ms安全监督。
+ *
+ * 当前板卡没有MCU可控Gate Enable。打开TA1/TA2/TB1/TB2即可能驱动功率器件；
+ * calibration_valid为0时，状态机必须停留在标定路径，PD0操作也不得开放PWM。
+ */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
@@ -56,16 +67,21 @@
 /* USER CODE BEGIN PV */
 
 /*
- * VOFA发送数组与VOFA+通道顺序一一对应，固定为8通道：
- * 测试锯齿、三路ADC原始值、三路换算值和故障位。
+ * VOFA JustFloat发送缓存，由主循环每10 ms写入并阻塞发送，固定使用8个通道。
+ * 标定无效时CH0~CH2为IPFC/VAC/VBUS原始码，其余测量通道清零；标定有效时
+ * CH0~CH6依次为VAC、VAC_RMS、IPFC、IPFC_RMS、VBUS、电流指令和调制量。
+ * CH7在两种模式下都编码PFC状态与故障位，具体打包关系见主循环发送位置。
  */
 static float vofa_data[VOFA_MAX_CHANNELS] = {0.0f};
 
-/* 0~99循环计数，经乘以0.01后形成0.00~0.99的1 Hz测试锯齿波。 */
-/* 供Keil Watch观察串口HAL调用结果；通信失败不触发功率故障。 */
+/* VOFA发送结果累计值，仅由主循环写，供Keil Watch判断调试串口是否持续工作。 */
 static uint32_t vofa_tx_ok_count = 0U;
 static uint32_t vofa_tx_error_count = 0U;
+
+/* 当前编译期参数档的常驻只读地址；初始化后由main和各PFC模块共同读取。 */
 static const PFC_Params *pfc_params = NULL;
+
+/* 上电复位来源快照：1表示IWDG复位；只在初始化时写入并传给状态机。 */
 static uint8_t pfc_iwdg_reset_seen = 0U;
 
 /* USER CODE END PV */
@@ -82,8 +98,9 @@ void SystemClock_Config(void);
 /* USER CODE END 0 */
 
 /**
-  * @brief  The application entry point.
-  * @retval int
+  * @brief  完成安全初始化并运行PFC后台调度循环。
+  * @retval 正常情况下不会返回。
+  * @note   功率输出许可由PFC状态机控制；本函数不绕过标定和PD0启动条件。
   */
 int main(void)
 {
@@ -118,6 +135,9 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
 
+  /* CubeMX初始化结束后第一时间保持四路输出关闭；当前板卡没有独立Gate Enable。 */
+  PFC_HRTIM_StopPower();
+
   pfc_iwdg_reset_seen = (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST) != RESET) ? 1U : 0U;
   __HAL_RCC_CLEAR_RESET_FLAGS();
   pfc_params = PFC_Params_GetActive();
@@ -131,27 +151,23 @@ int main(void)
 
 	/* 初始化测量模块的软件状态、DMA样本快照、序列号和故障标志。 */
 	PFC_Measure_Init(pfc_params);
+	PFC_AppInit(pfc_params, pfc_iwdg_reset_seen);
 
 	/*
 	 * 固定标签只写一次，避免软件I2C在主循环中重复传输不变内容：
 	 * I：IPFC输入电感电流；V：VAC交流输入电压；
 	 * D：VBUS直流母线电压；S：快速采样心跳，行末显示故障位。
 	 * 各测量行左侧为ADC原始码，右侧为换算后的工程量。
-	 * 采样心跳 是周期递增或周期变化的计数，用于确认采样、通信和主循环没有卡死。
-	 * 故障码 是当前或历史保护状态，例如过流、母线过压/欠压、输入欠压、过温、驱动异常等。
-	 *	具体每个数值或位的含义，需要看该项目的故障码定义表。
+	 * 采样心跳由ADC1完整DMA回调以10 kHz递增，用于确认双ADC同步快照持续发布；
+	 * 故障码来自PFC_FaultMask；当前运行路径会记录ADC同步/范围/AWD、HRTIM Fault、
+	 * 软件过流、母线过压、VAC同步丢失、参数、调制、状态和目标建立超时。
+	 * IWDG复位来源另存于pfc_iwdg_reset_seen，用于延长SAFE等待，不自动置故障位。
 	 */
 	OLED_ShowString(1, 1, "I:");
 	OLED_ShowString(2, 1, "V:");
 	OLED_ShowString(3, 1, "D:");
 	OLED_ShowString(4, 1, "S:");
 
-
-  /*
-   * 无功率采样阶段只验证HRTIM触发、ADC和DMA链路。
-   * PE0保持低电平，防止仅启动HRTIM计数器时误使能外部门极驱动器。
-   */
-  HAL_GPIO_WritePin(PFC_GATE_EN_GPIO_Port, PFC_GATE_EN_Pin, GPIO_PIN_RESET);
 
   /* ADC校准必须在启动规则组DMA之前完成，此时HRTIM尚未产生ADC触发。 */
   if (HAL_ADCEx_Calibration_Start(&hadc2, ADC_SINGLE_ENDED) != HAL_OK)
@@ -168,8 +184,19 @@ int main(void)
   }
 
   /*
+   * 标定有效时按参数档重写IPFC、VBUS和VAC看门狗阈值；标定无效时函数保留
+   * CubeMX宽窗口。AWD配置必须早于HAL_ADC_Start_DMA()，避免转换期间改模式。
+   */
+  if (PFC_Measure_ConfigureWatchdogs(&hadc1, &hadc2) != HAL_OK)
+  {
+    PFC_Measure_Trip(PFC_FAULT_PARAM | PFC_FAULT_ADC_ERROR);
+    Error_Handler();
+  }
+
+  /*
    * ADC2规则组只有VAC一个Rank。先启动ADC2 DMA，使其提前进入等待
-   * HRTIM_TRG1的状态；之后每次触发完成都更新VAC及adc2_sequence。
+   * HRTIM_TRG1的状态。DMA硬件更新VAC原始数组，完整传输回调只推进
+   * adc2_sequence，供随后完成的ADC1回调判断两个ADC是否属于同一采样节拍。
    */
   if (HAL_ADC_Start_DMA(&hadc2, (uint32_t *)PFC_Adc2Dma, 1U) != HAL_OK)
   {
@@ -198,19 +225,13 @@ int main(void)
 
   /*
    * 启动Master、Timer A/B计数器以产生10 kHz ADC Trigger。
-   * 此函数只建立采样时基，不开放TA1/TA2/TB1/TB2输出，也不拉高PE0。
+   * 此函数只建立采样时基，不开放TA1/TA2/TB1/TB2输出。
    */
   if (PFC_HRTIM_StartSampling() != HAL_OK)
   {
     PFC_Measure_Trip(PFC_FAULT_HRTIM);
     Error_Handler();
   }
-
-  /*
-   * 此时只启动计数器和ADC触发，四路PWM与PE0继续保持关闭。
-   * 状态机确认标定、VAC、VBUS和故障输入后，才接受PD0短按启动。
-   */
-  PFC_AppInit(pfc_params, pfc_iwdg_reset_seen);
 
   /*
    * IWDG放在可能耗时或失败的初始化之后启动。启动后不能关闭，只有在
@@ -223,15 +244,18 @@ int main(void)
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   
-  /* OLED属于低速后台任务，不参与10 kHz采样回调。 */
+  /* ms Tick；主循环独占写入，用于把OLED刷新限制为100 ms一次。 */
   uint32_t oled_tick = HAL_GetTick();
 
-  /* VOFA以10 ms为发送周期，即每秒发送约100帧。 */
+  /* ms Tick；主循环独占写入，VOFA约每秒发送100帧且不追补过期帧。 */
   uint32_t vofa_tick = HAL_GetTick();
 
-  /* 保存上一次监督时刻的序列号，用来判断两路DMA是否仍在持续更新。 */
-  uint32_t last_adc1_sequence = 0U;
-  uint32_t last_adc2_sequence = 0U;
+  /* ms Tick；安全监督与OLED独立计时，显示任务不能改变喂狗判据。 */
+  uint32_t safety_tick = HAL_GetTick();
+  /* 上一监督窗口的ADC序列快照；每100 ms更新，用于检测任一路DMA停滞。 */
+  uint32_t safety_last_adc1_sequence = 0U;
+  uint32_t safety_last_adc2_sequence = 0U;
+  /* ms Tick；通过逐毫秒追赶调用状态机，短暂主循环延迟不会跳过消抖计时。 */
   uint32_t app_tick = HAL_GetTick();
   while (1)
   {
@@ -260,18 +284,18 @@ int main(void)
 		PFC_Measure_GetSnapshot(&vofa_measurement);
 
 		/*
-		 * 标定状态：CH0~CH2发送IPFC/VAC/VBUS原始码，CH3~CH5发送占位比例换算结果。
+		 * 标定状态：CH0~CH2发送IPFC/VAC/VBUS原始码，CH3~CH6固定清零。
 		 * 其他状态：CH0~CH6发送VAC、VAC_RMS、IPFC、IPFC_RMS、VBUS、电流指令和调制量。
 		 */
-		if (PFC_AppGetState() == PFC_CALIBRATION)
+		if (PFC_AppCalibrationValid() == 0U)
 		{
-			/* 标定状态优先发送三路原始码值，PE0保持低，便于计算零点和比例。 */
+			/* 标定状态只发送可信的原始码；占位换算值不作为工程量展示。 */
 			vofa_data[0] = (float)vofa_measurement.ipfc_raw;
 			vofa_data[1] = (float)vofa_measurement.vac_raw;
 			vofa_data[2] = (float)vofa_measurement.vbus_raw;
-			vofa_data[3] = vofa_measurement.ipfc;
-			vofa_data[4] = vofa_measurement.vac;
-			vofa_data[5] = vofa_measurement.vbus;
+			vofa_data[3] = 0.0f;
+			vofa_data[4] = 0.0f;
+			vofa_data[5] = 0.0f;
 			vofa_data[6] = 0.0f;
 		}
 		else
@@ -322,13 +346,20 @@ int main(void)
          */
         PFC_Measure_GetSnapshot(&measurement);
 
-        /*
-         * 屏幕显示使用整数，避免在软件I2C显示函数中处理浮点格式化：
-         * ipfc_ma单位为mA，vac_cv和vbus_cv单位均为0.01 V。
-         */
-        ipfc_ma = (int32_t)(measurement.ipfc * 1000.0f);
-        vac_cv = (int32_t)(measurement.vac * 100.0f);
-        vbus_cv = (uint32_t)(measurement.vbus * 100.0f);
+        if (PFC_AppCalibrationValid() != 0U)
+        {
+          /* 标定后才把工程量换成整数显示：mA以及0.01 V。 */
+          ipfc_ma = (int32_t)(measurement.ipfc * 1000.0f);
+          vac_cv = (int32_t)(measurement.vac * 100.0f);
+          vbus_cv = (uint32_t)(measurement.vbus * 100.0f);
+        }
+        else
+        {
+          /* CAL模式右侧工程量固定为0，防止把占位比例误认为实测结果。 */
+          ipfc_ma = 0;
+          vac_cv = 0;
+          vbus_cv = 0U;
+        }
 
         /* 固定标签已在初始化阶段写入，此处只更新会变化的数字区域。 */
         OLED_ShowNum(1, 3, measurement.ipfc_raw, 4);
@@ -343,26 +374,26 @@ int main(void)
         OLED_ShowNum(4, 3, measurement.fast_heartbeat % 100000U, 5);
         OLED_ShowNum(4, 9, (uint32_t)PFC_AppGetState(), 1);
         OLED_ShowHexNum(4, 11, measurement.fault_bits, 3);
+    }
 
-        /*
-         * 两个序列号在相邻监督周期之间都必须前进。任一路停滞说明ADC、
-         * DMA或HRTIM触发链路异常，锁存同步故障并由测量模块执行安全停机。
-         */
-        if ((measurement.adc1_sequence == last_adc1_sequence) ||
-            (measurement.adc2_sequence == last_adc2_sequence))
-        {
-            PFC_Measure_Trip(PFC_FAULT_ADC_SYNC);
-        }
-        else if (PFC_AppWatchdogHealthy() != 0U)
-        {
-            /* 仅健康状态喂狗；不要在中断中或无条件刷新IWDG。 */
-            (void)HAL_IWDG_Refresh(&hiwdg);
-        }
+    if ((HAL_GetTick() - safety_tick) >= 100U)
+    {
+      PFC_Measurement safety_measurement;
 
-        /* 保存本次序列号，供下一个100 ms监督周期比较。 */
-        last_adc1_sequence = measurement.adc1_sequence;
-        last_adc2_sequence = measurement.adc2_sequence;
-
+      safety_tick = HAL_GetTick();
+      PFC_Measure_GetSnapshot(&safety_measurement);
+      if ((safety_measurement.adc1_sequence == safety_last_adc1_sequence) ||
+          (safety_measurement.adc2_sequence == safety_last_adc2_sequence))
+      {
+        /* 任一路DMA停滞都先锁存同步故障，再停止刷新IWDG。 */
+        PFC_Measure_Trip(PFC_FAULT_ADC_SYNC);
+      }
+      else if (PFC_AppWatchdogHealthy() != 0U)
+      {
+        (void)HAL_IWDG_Refresh(&hiwdg);
+      }
+      safety_last_adc1_sequence = safety_measurement.adc1_sequence;
+      safety_last_adc2_sequence = safety_measurement.adc2_sequence;
     }
 
 	  
@@ -415,6 +446,10 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+
+  /** Enables the Clock Security System
+  */
+  HAL_RCC_EnableCSS();
 }
 
 /* USER CODE BEGIN 4 */
@@ -448,6 +483,11 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
   }
 }
 
+/**
+ * @brief  将任一ADC的HAL错误统一转换为锁存故障。
+ * @param  hadc 发生错误的ADC句柄；当前策略不按ADC实例区分恢复方式。
+ * @note   运行在ADC/DMA错误中断上下文，只允许执行非阻塞安全关断和故障记录。
+ */
 void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc)
 {
   /*
@@ -459,20 +499,40 @@ void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc)
 }
 
 /**
- * @brief GPIO外部中断公共回调。
- * @param GPIO_Pin 触发EXTI的GPIO引脚掩码。
- *
- * PE5是驱动器nFAULT诊断信号。该回调用于记录和锁存故障；真正的快速
- * 关断应由驱动器DESAT/OCP到HRTIM Fault 3的硬件链路完成，不依赖CPU。
+ * @brief ADC1/2模拟看门狗1越窗回调。
+ * @param hadc 发生AWD1事件的ADC句柄；ADC1对应IPFC，ADC2对应VAC。
+ * @note 运行在ADC1_2中断中，只执行故障锁存和HRTIM快速关断。
  */
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+void HAL_ADC_LevelOutOfWindowCallback(ADC_HandleTypeDef *hadc)
 {
-  if (GPIO_Pin == PFC_NFAULT_DIAG_Pin)
+  if ((hadc != NULL) && (hadc->Instance == ADC1))
   {
-    PFC_Measure_Trip(PFC_FAULT_DRIVER);
+    PFC_Measure_AnalogWatchdog(PFC_AWD_SOURCE_IPFC);
+  }
+  else if ((hadc != NULL) && (hadc->Instance == ADC2))
+  {
+    PFC_Measure_AnalogWatchdog(PFC_AWD_SOURCE_VAC);
   }
 }
 
+/**
+ * @brief ADC1模拟看门狗2越窗回调，专门记录VBUS过压。
+ * @param hadc 预期为ADC1句柄。
+ * @note 运行在ADC1_2中断中；AWD2是硬件阈值检测，回调负责软件锁存和再次关断。
+ */
+void HAL_ADCEx_LevelOutOfWindow2Callback(ADC_HandleTypeDef *hadc)
+{
+  if ((hadc != NULL) && (hadc->Instance == ADC1))
+  {
+    PFC_Measure_AnalogWatchdog(PFC_AWD_SOURCE_VBUS);
+  }
+}
+
+/**
+ * @brief  记录HRTIM Fault 3事件并锁存PFC故障。
+ * @param  hhrtim 产生Fault 3中断的HRTIM句柄；当前工程只有HRTIM1。
+ * @note   HRTIM硬件输出无效逻辑是第一关断路径，本ISR不是短路保护的首响应路径。
+ */
 void HAL_HRTIM_Fault3Callback(HRTIM_HandleTypeDef *hhrtim)
 {
   /*
@@ -495,7 +555,7 @@ void Error_Handler(void)
   /*
    * 不可恢复的初始化或HAL错误统一进入安全态：先关闭全部HRTIM计数和
    * 输出，再禁止中断并停留；若IWDG已经启动，最终由IWDG复位系统。
-   * 板级Gate Enable还应保持默认低。
+   * 当前驱动板没有MCU Gate Enable，因此HRTIM输出禁止就是软件关断边界。
    */
   PFC_HRTIM_StopAll();
   __disable_irq();

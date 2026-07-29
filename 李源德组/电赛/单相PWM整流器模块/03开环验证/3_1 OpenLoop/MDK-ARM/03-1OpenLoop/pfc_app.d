@@ -2,9 +2,6 @@
 03-1openloop\pfc_app.o: ../Core/Inc/pfc_app.h
 03-1openloop\pfc_app.o: D:\Keil5\ARM\ARMCC\Bin\..\include\stdint.h
 03-1openloop\pfc_app.o: ../Core/Inc/pfc_measure.h
-03-1openloop\pfc_app.o: ../Core/Inc/pfc_params.h
-03-1openloop\pfc_app.o: ../Core/Inc/SPWM.h
-03-1openloop\pfc_app.o: ../Core/Inc/pfc_hrtim.h
 03-1openloop\pfc_app.o: ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal.h
 03-1openloop\pfc_app.o: ../Core/Inc/stm32g4xx_hal_conf.h
 03-1openloop\pfc_app.o: ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_rcc.h
@@ -39,4 +36,7 @@
 03-1openloop\pfc_app.o: ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_pwr_ex.h
 03-1openloop\pfc_app.o: ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_uart.h
 03-1openloop\pfc_app.o: ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_uart_ex.h
+03-1openloop\pfc_app.o: ../Core/Inc/pfc_params.h
+03-1openloop\pfc_app.o: ../Core/Inc/SPWM.h
+03-1openloop\pfc_app.o: ../Core/Inc/pfc_hrtim.h
 03-1openloop\pfc_app.o: ../Core/Inc/main.h

@@ -38,6 +38,21 @@
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 
+/**
+ * @brief 逆变开环验证状态。
+ * @note 状态由初始化主流程和10 kHz控制回调更新，Keil Watch只读观察。
+ */
+typedef enum
+{
+  INV_STATE_SAFE = 0U,
+  INV_STATE_ADC_CALIBRATION,
+  INV_STATE_ADC_OFFSET,
+  INV_STATE_READY,
+  INV_STATE_SOFT_START,
+  INV_STATE_RUNNING,
+  INV_STATE_FAULT_LATCH
+} INV_AppState;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -50,19 +65,24 @@
  *
  * 调制度计算：M = 2 * Vphase_peak / Vdc，Vphase_peak=Vline_rms*sqrt(2/3)。
  * 当前Vdc=5 V、Vline_rms=2.5 V，因此目标M约为0.816，低于0.90限幅。
- * 软件在1 s内把调制度从0平滑增加到目标值，避免Gate Enable开启后突加电压。
+ * 软件在1 s内把调制度从0平滑增加到目标值，避免PWM开放后突加电压。
  */
-#define INV_OPEN_LOOP_DC_BUS_V             (5.0f)  /* 实际接到逆变桥直流侧的母线电压。 */
-#define INV_OPEN_LOOP_LINE_RMS_V            (2.5f)  /* 目标U-V/V-W/W-U线电压有效值。 */
-#define INV_OPEN_LOOP_DEFAULT_FREQUENCY     (INV_FREQ_60HZ) /* 改为INV_FREQ_30HZ即可测试题目第5项。 */
-#define INV_OPEN_LOOP_ENABLE_POWER_STAGE    (1U)    /* 1=拉高PE1带低压功率级；0=仅测MCU PWM。 */
-#define INV_TEST_MODULATION_LIMIT      (0.90f)
-#define INV_TEST_MINIMUM_DC_V          (1.0f)
-#define INV_TEST_OFFSET_TIMEOUT_MS     (200U)
-#define INV_TEST_SUPERVISOR_PERIOD_MS  (100U)
-#define INV_TEST_VOFA_PERIOD_MS        (10U)
-#define INV_TEST_OLED_PERIOD_MS        (100U)
-#define INV_TEST_LIMITED_MAX_FRAMES    (100U) /* 连续限幅10 ms才锁存，允许瞬时舍入。 */
+#define INV_OPEN_LOOP_DC_BUS_V          (5.0f)
+#define INV_OPEN_LOOP_LINE_RMS_V         (2.5f)
+#define INV_OPEN_LOOP_DEFAULT_FREQUENCY  (INV_FREQ_60HZ)
+#define INV_OPEN_LOOP_CONTROL_HZ         (10000U)
+#define INV_OPEN_LOOP_SOFT_START_MS      (1000U)
+#define INV_OPEN_LOOP_MODULATION_LIMIT   (0.90f)
+#define INV_OPEN_LOOP_MINIMUM_DC_V       (1.0f)
+
+/* 1表示自检后开放C/D/E六路PWM；改为0可仅运行ADC和算法并观察比较值。 */
+#define INV_ENABLE_PWM_OUTPUT            (1U)
+
+#define INV_TEST_OFFSET_TIMEOUT_MS       (200U)
+#define INV_TEST_SUPERVISOR_PERIOD_MS    (100U)
+#define INV_TEST_VOFA_PERIOD_MS          (10U)
+#define INV_TEST_OLED_PERIOD_MS          (100U)
+#define INV_TEST_LIMITED_MAX_FRAMES      (100U)
 
 /* USER CODE END PD */
 
@@ -85,6 +105,20 @@ static float vofa_data[VOFA_MAX_CHANNELS] = {0.0f};
 static uint32_t vofa_tx_ok_count = 0U;
 static uint32_t vofa_tx_error_count = 0U;
 
+/*
+ * 当前低压测试的唯一运行参数入口。后续改为赛题32 Vrms时，应同时传入实测
+ * VBUS并重新校核调制度；不能只修改line_rms_target_v一个字段。
+ */
+static const INV_OpenLoopConfig inv_open_loop_config =
+{
+  INV_OPEN_LOOP_DC_BUS_V,
+  INV_OPEN_LOOP_LINE_RMS_V,
+  INV_OPEN_LOOP_DEFAULT_FREQUENCY,
+  INV_OPEN_LOOP_MODULATION_LIMIT,
+  INV_OPEN_LOOP_SOFT_START_MS,
+  INV_OPEN_LOOP_CONTROL_HZ
+};
+
 /* 以下非static调试量可直接加入Keil Watch；ISR写入，调试器只读观察。 */
 /* CBSVPWM运行对象保留归一化、零序注入、限幅和最终占空比中间量。 */
 CBSVPWM_t inv_svpwm;
@@ -96,11 +130,11 @@ CBSVPWM_t inv_svpwm;
 volatile float inv_sine_u = 0.0f;
 volatile uint16_t inv_output_frequency_hz = 60U;
 volatile uint32_t inv_control_heartbeat = 0U;
-static uint32_t inv_last_control_frame = 0U;
 uint32_t inv_control_max_cycles = 0U;
 static uint32_t inv_limited_frames = 0U;
-/* 主循环在输出启动成功后置1；在此之前ISR只接收ADC快照，不推进软启动。 */
-static volatile uint8_t inv_outputs_started = 0U;
+
+/* 应用状态可直接加入Keil Watch；只有SOFT_START/RUNNING允许更新PWM比较值。 */
+volatile INV_AppState inv_state = INV_STATE_SAFE;
 
 /* USER CODE END PV */
 
@@ -108,7 +142,8 @@ static volatile uint8_t inv_outputs_started = 0U;
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 
-static void INV_TestOpenLoopStep(void);
+static void INV_AppTrip(uint32_t fault_bits);
+static void INV_AppRunFastControl(const INV_Measurement *measurement);
 static HAL_StatusTypeDef INV_TestWaitForOffset(void);
 static HAL_StatusTypeDef INV_OpenLoopStartOutputs(void);
 static void INV_TestDwtInit(void);
@@ -118,17 +153,27 @@ static void INV_TestDwtInit(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-/* 功率模式关闭时，仅开放以下六路HRTIM引脚，PE1保持低电平。 */
-#define INV_TEST_HRTIM_OUTPUTS (HRTIM_OUTPUT_TC1 | HRTIM_OUTPUT_TC2 | \
-                                HRTIM_OUTPUT_TD1 | HRTIM_OUTPUT_TD2 | \
-                                HRTIM_OUTPUT_TE1 | HRTIM_OUTPUT_TE2)
+/**
+ * @brief 统一锁存故障并立即撤销六路PWM输出。
+ * @param fault_bits INV_FaultMask位组合，0输入不会清除已有故障。
+ * @note 允许从ISR调用；只执行寄存器/HAL非阻塞关断和软件状态复位，
+ *       不发送USART、不刷新OLED，也不允许自动重新开放PWM。
+ */
+static void INV_AppTrip(uint32_t fault_bits)
+{
+  INV_HRTIM_DisableOutputs();
+  INV_Measure_LatchFault(fault_bits);
+  INV_OpenLoop_Reset();
+  CBSVPWM_Reset(&inv_svpwm);
+  inv_state = INV_STATE_FAULT_LATCH;
+}
 
 /**
  * @brief 等待ADC3/4/5完成零点标定并形成有效的六通道快照。
  * @retval HAL_OK表示三路DMA同步运行且标定完成；超时或故障返回HAL_ERROR。
  *
- * 此时Master和Timer C/D/E只负责产生HRTIM Trigger 2，六路PWM输出及PE1
- * 均保持关闭。等待上限200 ms，正常情况下256帧在约25.6 ms内即可完成。
+ * 此时Master和Timer C/D/E只产生HRTIM Trigger 2，六路PWM输出保持关闭。
+ * 等待上限200 ms，正常情况下256帧在约25.6 ms内即可完成。
  */
 static HAL_StatusTypeDef INV_TestWaitForOffset(void)
 {
@@ -151,27 +196,19 @@ static HAL_StatusTypeDef INV_TestWaitForOffset(void)
     }
   }
 
-  INV_Measure_Trip(INV_FAULT_ADC_SYNC);
+  INV_AppTrip(INV_FAULT_ADC_SYNC);
   return HAL_TIMEOUT;
 }
 
 /**
- * @brief 按INV_OPEN_LOOP_ENABLE_POWER_STAGE选择低压带功率或仅MCU试波。
- * @retval HAL_OK表示输出按所选模式启动；Fault或GPIO状态异常返回HAL_ERROR。
- *
- * PB10在IOC中没有用户标签，因此这里按已确认的HRTIM1_FLT3引脚直接读取。
- * PE6是逆变驱动器诊断输入。二者均为低有效，任何一路为低都禁止启动。
- * 功率模式调用INV_HRTIM_EnablePowerStage()，由该函数最后拉高PE1；若将宏改为0，
- * 则只开放MCU的C/D/E引脚，并继续强制PE1为低。
+ * @brief 检查PB10/FLT3，并按编译开关决定是否开放C/D/E六路PWM。
+ * @retval HAL_OK 启动条件满足；HAL_ERROR表示Fault有效或HRTIM启动失败。
+ * @note 当前板没有PE Gate Enable或PE6 nFAULT输入。PB10若未连接真实故障源，
+ *       只能用于人工拉低验证，不能等同于驱动器DESAT/OCP保护。
  */
 static HAL_StatusTypeDef INV_OpenLoopStartOutputs(void)
 {
-  HAL_GPIO_WritePin(PFC_GATE_EN_GPIO_Port, PFC_GATE_EN_Pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(INV_GATE_EN_GPIO_Port, INV_GATE_EN_Pin, GPIO_PIN_RESET);
-
   if ((HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_10) == GPIO_PIN_RESET) ||
-      (HAL_GPIO_ReadPin(INV_NFAULT_DIAG_GPIO_Port,
-                       INV_NFAULT_DIAG_Pin) == GPIO_PIN_RESET) ||
       (__HAL_HRTIM_GET_FLAG(&hhrtim1, HRTIM_FLAG_FLT3) != RESET))
   {
     return HAL_ERROR;
@@ -183,17 +220,10 @@ static HAL_StatusTypeDef INV_OpenLoopStartOutputs(void)
     return HAL_ERROR;
   }
 
-#if (INV_OPEN_LOOP_ENABLE_POWER_STAGE != 0U)
-  return INV_HRTIM_EnablePowerStage();
+#if (INV_ENABLE_PWM_OUTPUT != 0U)
+  return INV_HRTIM_EnableOutputs();
 #else
-  if (HAL_HRTIM_WaveformOutputStart(&hhrtim1,
-                                    INV_TEST_HRTIM_OUTPUTS) != HAL_OK)
-  {
-    return HAL_ERROR;
-  }
-
-  /* 仅MCU试波模式下再次强制PE1为低，防止外部门极驱动器被意外使能。 */
-  HAL_GPIO_WritePin(INV_GATE_EN_GPIO_Port, INV_GATE_EN_Pin, GPIO_PIN_RESET);
+  /* 示波器安全模式仍运行ADC、DDS和比较值更新，但物理PWM引脚保持关闭。 */
   return HAL_OK;
 #endif
 }
@@ -207,17 +237,21 @@ static void INV_TestDwtInit(void)
 }
 
 /**
- * @brief 在一个新的六通道ADC同步帧到达后执行一次DDS和CBSVPWM更新。
+ * @brief 在一个新六通道同步帧到达后执行一次DDS、CBSVPWM和HRTIM更新。
+ * @param measurement 本次ADC同步帧，只用于有效性检查，不直接读取DMA数组。
  * @note  本函数运行于DMA中断上下文，禁止阻塞HAL、OLED、USART和HAL_Delay()。
  */
-static void INV_TestOpenLoopStep(void)
+static void INV_AppRunFastControl(const INV_Measurement *measurement)
 {
   INV_OpenLoopOutput reference;
   uint32_t start_cycles;
   uint32_t elapsed_cycles;
 
-  if ((INV_Measure_GetFault() != INV_FAULT_NONE) ||
-      (inv_outputs_started == 0U))
+  if ((measurement == NULL) ||
+      (measurement->valid == 0U) ||
+      (measurement->fault_bits != INV_FAULT_NONE) ||
+      ((inv_state != INV_STATE_SOFT_START) &&
+       (inv_state != INV_STATE_RUNNING)))
   {
     return;
   }
@@ -225,7 +259,7 @@ static void INV_TestOpenLoopStep(void)
   start_cycles = DWT->CYCCNT;
   if (!INV_OpenLoop_Step(&reference))
   {
-    INV_Measure_Trip(INV_FAULT_PARAMETER);
+    INV_AppTrip(INV_FAULT_PARAMETER);
     return;
   }
 
@@ -236,31 +270,42 @@ static void INV_TestOpenLoopStep(void)
                        reference.vu_command,
                        reference.vv_command,
                        reference.vw_command,
-                       INV_OPEN_LOOP_DC_BUS_V) == 0U)
+                       reference.dc_bus_v) == 0U)
   {
-    INV_Measure_Trip(INV_FAULT_CBSVPWM);
+    INV_AppTrip(INV_FAULT_CBSVPWM);
     return;
   }
 
   if (inv_svpwm.limited != 0U) {
     inv_limited_frames++;
     if (inv_limited_frames >= INV_TEST_LIMITED_MAX_FRAMES) {
-      INV_Measure_Trip(INV_FAULT_CBSVPWM);
+      INV_AppTrip(INV_FAULT_CBSVPWM);
       return;
     }
   } else {
     inv_limited_frames = 0U;
   }
 
+  /* Fault 0级中断可能抢占本控制ISR；恢复后必须复查，禁止继续写比较值。 */
+  if ((inv_state == INV_STATE_FAULT_LATCH) ||
+      (INV_Measure_GetFault() != INV_FAULT_NONE))
+  {
+    return;
+  }
+
   if (INV_HRTIM_SetDuty(inv_svpwm.duty_u,
                         inv_svpwm.duty_v,
                         inv_svpwm.duty_w) != HAL_OK)
   {
-    INV_Measure_Trip(INV_FAULT_PWM_COMMAND);
+    INV_AppTrip(INV_FAULT_PWM_COMMAND);
     return;
   }
 
   inv_control_heartbeat++;
+  if (reference.ramp >= 1.0f)
+  {
+    inv_state = INV_STATE_RUNNING;
+  }
   elapsed_cycles = DWT->CYCCNT - start_cycles;
   if (elapsed_cycles > inv_control_max_cycles) {
     inv_control_max_cycles = elapsed_cycles;
@@ -309,16 +354,14 @@ int main(void)
   MX_ADC5_Init();
   /* USER CODE BEGIN 2 */
 
-  /* 启动阶段先建立安全态；PE1只能在ADC/Fault自检通过后由HRTIM模块最后拉高。 */
-  HAL_GPIO_WritePin(PFC_GATE_EN_GPIO_Port, PFC_GATE_EN_Pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(INV_GATE_EN_GPIO_Port, INV_GATE_EN_Pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(PRECHARGE_EN_GPIO_Port, PRECHARGE_EN_Pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(DISCHARGE_EN_GPIO_Port, DISCHARGE_EN_Pin, GPIO_PIN_RESET);
+  /* 任何模块初始化前先撤销C/D/E输出；当前IOC中PE0～PE6均不参与控制。 */
+  INV_HRTIM_DisableOutputs();
+  inv_state = INV_STATE_SAFE;
 
   /*
    * 上电后只在初始化阶段等待一次，使OLED内部电源和电荷泵稳定。
    * 禁止把HAL_Delay()放入主循环或ADC DMA回调，否则会破坏后台调度
-   * 或10 kHz开环控制节拍。等待期间四个安全控制输出仍保持低电平。
+   * 或10 kHz开环控制节拍。等待期间HRTIM六路PWM保持关闭。
    */
   HAL_Delay(100U);
   OLED_Init();
@@ -340,7 +383,6 @@ int main(void)
 
   /* 清空测量、DMA同步序列、零点累加器、DDS软启动状态和历史故障。 */
   INV_Measure_Init();
-  inv_outputs_started = 0U;
   inv_limited_frames = 0U;
   INV_TestDwtInit();
 
@@ -349,38 +391,38 @@ int main(void)
    * 默认60 Hz；后续需要题目第5项时可调用SetFrequency(INV_FREQ_30HZ)，
    * DDS只改变相位步进，不清零当前相位，因此切换时不会产生相位跳变。
    */
-  INV_OpenLoop_Init(INV_OPEN_LOOP_DC_BUS_V, INV_OPEN_LOOP_LINE_RMS_V);
-  if (!INV_OpenLoop_SetFrequency(INV_OPEN_LOOP_DEFAULT_FREQUENCY))
+  if (!INV_OpenLoop_Init(&inv_open_loop_config))
   {
-    INV_Measure_Trip(INV_FAULT_PARAMETER);
+    INV_AppTrip(INV_FAULT_PARAMETER);
     Error_Handler();
   }
 
   /* CBSVPWM使用5 V开环母线参数；本阶段仍未配置独立VBUS ADC反馈。 */
   if (CBSVPWM_Init(&inv_svpwm,
-                   INV_TEST_MODULATION_LIMIT,
-                   INV_TEST_MINIMUM_DC_V) == 0U)
+                   inv_open_loop_config.modulation_limit,
+                   INV_OPEN_LOOP_MINIMUM_DC_V) == 0U)
   {
-    INV_Measure_Trip(INV_FAULT_CBSVPWM);
+    INV_AppTrip(INV_FAULT_CBSVPWM);
     Error_Handler();
   }
 
   /* ADC校准必须在规则组DMA和HRTIM Trigger 2启动之前完成。 */
+  inv_state = INV_STATE_ADC_CALIBRATION;
   if (HAL_ADCEx_Calibration_Start(&hadc5, ADC_SINGLE_ENDED) != HAL_OK)
   {
-    INV_Measure_Trip(INV_FAULT_ADC_ERROR);
+    INV_AppTrip(INV_FAULT_ADC_ERROR);
     Error_Handler();
   }
 
   if (HAL_ADCEx_Calibration_Start(&hadc4, ADC_SINGLE_ENDED) != HAL_OK)
   {
-    INV_Measure_Trip(INV_FAULT_ADC_ERROR);
+    INV_AppTrip(INV_FAULT_ADC_ERROR);
     Error_Handler();
   }
 
   if (HAL_ADCEx_Calibration_Start(&hadc3, ADC_SINGLE_ENDED) != HAL_OK)
   {
-    INV_Measure_Trip(INV_FAULT_ADC_ERROR);
+    INV_AppTrip(INV_FAULT_ADC_ERROR);
     Error_Handler();
   }
 
@@ -390,19 +432,19 @@ int main(void)
    */
   if (HAL_ADC_Start_DMA(&hadc5, (uint32_t *)INV_Adc5Dma, 2U) != HAL_OK)
   {
-    INV_Measure_Trip(INV_FAULT_ADC_ERROR);
+    INV_AppTrip(INV_FAULT_ADC_ERROR);
     Error_Handler();
   }
 
   if (HAL_ADC_Start_DMA(&hadc4, (uint32_t *)INV_Adc4Dma, 2U) != HAL_OK)
   {
-    INV_Measure_Trip(INV_FAULT_ADC_ERROR);
+    INV_AppTrip(INV_FAULT_ADC_ERROR);
     Error_Handler();
   }
 
   if (HAL_ADC_Start_DMA(&hadc3, (uint32_t *)INV_Adc3Dma, 2U) != HAL_OK)
   {
-    INV_Measure_Trip(INV_FAULT_ADC_ERROR);
+    INV_AppTrip(INV_FAULT_ADC_ERROR);
     Error_Handler();
   }
 
@@ -416,11 +458,12 @@ int main(void)
 
   /*
    * 启动Master与Timer C/D/E计数器，Master CMP2通过HRTIM Trigger 2
-   * 以10 kHz触发ADC3/4/5；该函数不会开放六路PWM或拉高PE1。
+   * 以10 kHz触发ADC3/4/5；该函数不会开放六路PWM。
    */
-  if (INV_HRTIM_StartSampling() != HAL_OK)
+  inv_state = INV_STATE_ADC_OFFSET;
+  if (INV_HRTIM_StartTimeBase() != HAL_OK)
   {
-    INV_Measure_Trip(INV_FAULT_HRTIM);
+    INV_AppTrip(INV_FAULT_HRTIM);
     Error_Handler();
   }
 
@@ -433,18 +476,29 @@ int main(void)
     Error_Handler();
   }
 
-  if (INV_OpenLoopStartOutputs() != HAL_OK)
+  /* PB10/FLT3正常且ADC零点完成后进入READY，此时物理PWM仍未开放。 */
+  inv_state = INV_STATE_READY;
+  if ((HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_10) == GPIO_PIN_RESET) ||
+      (__HAL_HRTIM_GET_FLAG(&hhrtim1, HRTIM_FLAG_FLT3) != RESET))
   {
-    INV_Measure_Trip(INV_FAULT_HRTIM);
+    INV_AppTrip(INV_FAULT_HRTIM);
     Error_Handler();
   }
-  inv_outputs_started = 1U;
 
   /*
-   * IWDG最后启动。之后只有ADC3/4/5序列、控制心跳、Fault和安全GPIO
-   * 全部健康时才刷新；任何监督异常都保留故障并等待看门狗复位。
+   * IWDG在所有阻塞式初始化完成后、PWM开放前启动。此后任一启动失败均不再
+   * 刷新看门狗，约500 ms后复位，且复位期间HRTIM输出保持默认关闭。
    */
   MX_IWDG_Init();
+
+  if (INV_OpenLoopStartOutputs() != HAL_OK)
+  {
+    INV_AppTrip(INV_FAULT_HRTIM);
+    Error_Handler();
+  }
+
+  /* 下一完整ADC同步帧开始推进DDS和1 s软启动，不在主循环伪造控制节拍。 */
+  inv_state = INV_STATE_SOFT_START;
 
   /* USER CODE END 2 */
 
@@ -530,32 +584,34 @@ int main(void)
 
       if ((measurement.adc3_sequence == last_adc3_sequence) ||
           (measurement.adc4_sequence == last_adc4_sequence) ||
-          (measurement.adc5_sequence == last_adc5_sequence) ||
-          (measurement.fast_heartbeat == last_fast_heartbeat) ||
-          (inv_control_heartbeat == last_control_heartbeat))
+          (measurement.adc5_sequence == last_adc5_sequence))
       {
-        INV_Measure_Trip(INV_FAULT_ADC_SYNC);
+        INV_AppTrip(INV_FAULT_ADC_SYNC);
+      }
+      else if ((measurement.fast_heartbeat == last_fast_heartbeat) ||
+               (inv_control_heartbeat == last_control_heartbeat))
+      {
+        INV_AppTrip(INV_FAULT_CONTROL_TIMEOUT);
+      }
+      else if (measurement.fault_bits != INV_FAULT_NONE)
+      {
+        INV_AppTrip(measurement.fault_bits);
       }
       else if ((measurement.valid == 0U) ||
-               (measurement.fault_bits != INV_FAULT_NONE) ||
                (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_10) == GPIO_PIN_RESET) ||
-               (HAL_GPIO_ReadPin(INV_NFAULT_DIAG_GPIO_Port,
-                                INV_NFAULT_DIAG_Pin) == GPIO_PIN_RESET) ||
-               (HAL_GPIO_ReadPin(PFC_GATE_EN_GPIO_Port,
-                                PFC_GATE_EN_Pin) != GPIO_PIN_RESET) ||
-               ((INV_OPEN_LOOP_ENABLE_POWER_STAGE != 0U) &&
-                (HAL_GPIO_ReadPin(INV_GATE_EN_GPIO_Port,
-                                 INV_GATE_EN_Pin) != GPIO_PIN_SET)) ||
-               ((INV_OPEN_LOOP_ENABLE_POWER_STAGE == 0U) &&
-                (HAL_GPIO_ReadPin(INV_GATE_EN_GPIO_Port,
-                                 INV_GATE_EN_Pin) != GPIO_PIN_RESET)))
+               (__HAL_HRTIM_GET_FLAG(&hhrtim1, HRTIM_FLAG_FLT3) != RESET) ||
+               ((inv_state != INV_STATE_SOFT_START) &&
+                (inv_state != INV_STATE_RUNNING)))
       {
-        INV_Measure_Trip(INV_FAULT_DRIVER);
+        INV_AppTrip(INV_FAULT_HRTIM);
       }
       else
       {
         /* 仅在完整安全条件成立时刷新IWDG，禁止在中断中无条件喂狗。 */
-        (void)HAL_IWDG_Refresh(&hiwdg);
+        if (HAL_IWDG_Refresh(&hiwdg) != HAL_OK)
+        {
+          INV_AppTrip(INV_FAULT_SYSTEM);
+        }
       }
 
       last_adc3_sequence = measurement.adc3_sequence;
@@ -567,7 +623,7 @@ int main(void)
 
     /*
      * 每100 ms更新一次OLED。安全监督放在本段之前执行，确保软件I2C传输
-     * 不会推迟DMA失步、驱动故障或Gate Enable异常的检测与安全关断。
+     * 不会推迟DMA失步、FLT3或控制心跳异常的检测与安全关断。
      */
     if ((HAL_GetTick() - oled_tick) >= INV_TEST_OLED_PERIOD_MS)
     {
@@ -665,53 +721,44 @@ void SystemClock_Config(void)
  * @param hadc 发生完整转换事件的ADC句柄。
  *
  * ADC3/4/5均由HRTIM Master CMP2通过HRTIM_TRG2以10 kHz触发。每个ADC
- * 分支先发布自己的DMA序列；只有三个序列全部更新后，测量模块才把
- * fast_heartbeat增加一次。随后比较心跳，保证一个PWM周期只运行一次控制。
+ * 分支先发布自己的DMA序列；只有三个序列全部更新后，测量模块才返回true
+ * 和一份完整快照，因此一个PWM周期只会运行一次开环控制。
  *
  * 该函数运行在DMA中断上下文，禁止调用阻塞式USART或HAL_Delay()。
  */
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
-  /* 回调内快照用于判断三个DMA是否已拼成一个新的、可供控制使用的完整帧。 */
   INV_Measurement measurement;
-
-  /* 标记本次回调是否来自ADC3/4/5，避免未来其他ADC误触发逆变控制入口。 */
-  uint8_t inverter_adc = 1U;
+  bool frame_ready = false;
 
   if ((hadc != NULL) && (hadc->Instance == ADC3))
   {
-    INV_Measure_OnAdc3Complete();
+    frame_ready = INV_Measure_OnAdc3Complete(&measurement);
   }
   else if ((hadc != NULL) && (hadc->Instance == ADC4))
   {
-    INV_Measure_OnAdc4Complete();
+    frame_ready = INV_Measure_OnAdc4Complete(&measurement);
   }
   else if ((hadc != NULL) && (hadc->Instance == ADC5))
   {
-    INV_Measure_OnAdc5Complete();
-  }
-  else
-  {
-    inverter_adc = 0U;
+    frame_ready = INV_Measure_OnAdc5Complete(&measurement);
   }
 
-  if (inverter_adc == 0U)
+  /*
+   * 测量模块内部发现失步或贴轨时只负责锁存记录；应用层必须在同一ISR
+   * 立即撤销HRTIM输出，不能等待100 ms后台监督才执行关断。
+   */
+  if (INV_Measure_GetFault() != INV_FAULT_NONE)
   {
+    INV_AppTrip(INV_Measure_GetFault());
     return;
   }
 
-  INV_Measure_GetSnapshot(&measurement);
-
-  /*
-   * 标定完成且出现新的六通道同步帧时才推进开环。三个DMA回调均会经过
-   * 此处，但fast_heartbeat每帧只变化一次，因此不会重复更新CBSVPWM。
-   */
-  if ((measurement.offset_ready != 0U) &&
-      (measurement.valid != 0U) &&
-      (measurement.fast_heartbeat != inv_last_control_frame))
+  if (frame_ready &&
+      (measurement.offset_ready != 0U) &&
+      (measurement.valid != 0U))
   {
-    inv_last_control_frame = measurement.fast_heartbeat;
-    INV_TestOpenLoopStep();
+    INV_AppRunFastControl(&measurement);
   }
 }
 
@@ -730,22 +777,24 @@ void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc)
        (hadc->Instance == ADC4) ||
        (hadc->Instance == ADC5)))
   {
-    INV_Measure_AdcError();
+    INV_AppTrip(INV_FAULT_ADC_ERROR);
   }
 }
 
 /**
- * @brief GPIO外部中断公共回调。
- * @param GPIO_Pin 触发EXTI的GPIO引脚掩码。
- *
- * PE6是逆变驱动器nFAULT诊断信号。该回调用于记录和锁存故障；真正的快速
- * 关断应由驱动器DESAT/OCP到HRTIM Fault 3的硬件链路完成，不依赖CPU。
+ * @brief ADC模拟看门狗越界回调，仅处理当前逆变使用的ADC3/4/5。
+ * @param hadc 触发AWD1或AWD2的ADC句柄。
+ * @note 当前IOC阈值仍为0～4095，正常不会触发。完成模拟前端标定并收紧阈值后，
+ *       本回调会立即关闭PWM并锁存故障；禁止在此处执行串口或OLED操作。
  */
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+void HAL_ADC_LevelOutOfWindowCallback(ADC_HandleTypeDef *hadc)
 {
-  if (GPIO_Pin == INV_NFAULT_DIAG_Pin)
+  if ((hadc != NULL) &&
+      ((hadc->Instance == ADC3) ||
+       (hadc->Instance == ADC4) ||
+       (hadc->Instance == ADC5)))
   {
-    INV_Measure_Trip(INV_FAULT_DRIVER);
+    INV_AppTrip(INV_FAULT_ADC_WATCHDOG);
   }
 }
 
@@ -759,8 +808,10 @@ void HAL_HRTIM_Fault3Callback(HRTIM_HandleTypeDef *hhrtim)
    * Fault 3硬件逻辑已先把HRTIM输出置为Inactive；ISR随后记录故障状态，
    * 供主循环显示和状态机处理。清除中断标志不代表允许自动恢复PWM。
    */
-  (void)hhrtim;
-  INV_Measure_Trip(INV_FAULT_HRTIM);
+  if ((hhrtim != NULL) && (hhrtim->Instance == HRTIM1))
+  {
+    INV_AppTrip(INV_FAULT_HRTIM);
+  }
 }
 
 /* USER CODE END 4 */
@@ -773,15 +824,15 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /*
-   * 不可恢复的初始化或HAL错误统一进入安全态：先拉低两个Gate Enable，
-   * 再关闭逆变HRTIM输出和C/D/E计数器。若IWDG已经启动，最终由其复位；
-   * 若IWDG尚未启动，则保持在门极关闭的死循环中等待人工复位。
+   * 不可恢复HAL错误先关闭六路PWM并停止C/D/E计数器。若IWDG已经启动，
+   * 停止刷新后由其复位；若尚未启动，则保持输出关闭并等待人工复位。
    */
-  HAL_GPIO_WritePin(PFC_GATE_EN_GPIO_Port, PFC_GATE_EN_Pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(INV_GATE_EN_GPIO_Port, INV_GATE_EN_Pin, GPIO_PIN_RESET);
+  INV_HRTIM_DisableOutputs();
+  INV_Measure_LatchFault(INV_FAULT_SYSTEM);
   INV_OpenLoop_Reset();
   CBSVPWM_Reset(&inv_svpwm);
-  INV_HRTIM_StopAll();
+  INV_HRTIM_StopInverterTimers();
+  inv_state = INV_STATE_FAULT_LATCH;
   __disable_irq();
   while (1)
   {

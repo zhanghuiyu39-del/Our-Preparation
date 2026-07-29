@@ -4,6 +4,8 @@
 
 本文以当前 `01仅INV/02仅INV初步开环/02OpenLoop.ioc` 为配置事实来源，用于逐步完成“单相全桥 PWM 整流器 + 三相三桥臂逆变器”的 CubeMX 外设配置。最终负载接口固定为三相三线，不使用外接中性线和第四逆变桥臂。本文只说明 CubeMX 配置、生成代码核对和上板验证，不修改现有 `.ioc`，也不包含 PI、PR/QPR、PLL、DDS 或 SVPWM 的具体代码。
 
+【本次新增】保护配置依据同目录的[现有固定硬件条件下保护外设配置方案.md](./现有固定硬件条件下保护外设配置方案.md)，并结合固定板卡原理图、CubeMX 6.17数据库和STM32Cube FW_G4 V1.6.2 HAL实现重新设计。
+
 固定环境如下：
 
 | 项目 | 固定值 |
@@ -17,11 +19,49 @@
 | ADC 内核输入 | 170 MHz，ADC 内部异步 `/4`，实际 42.5 MHz |
 | PWM | 中心对齐 10 kHz |
 | 软件结构 | 裸机、规则组 ADC + 循环 DMA、主循环低速任务 |
-| COMP/DAC | 默认关闭 |
+| COMP/DAC | ~~默认关闭~~ **【修改为】** ADC看门狗为最终基线；COMP1/3/4和内部DAC阈值为分阶段增强项 |
 
-> 安全边界：PB10/HRTIM1_FLT3 必须连接具有独立 DESAT/OCP 或等效短路保护能力的驱动器故障链。ADC 软件过流只能在采样和软件响应延迟后关断，不能替代驱动器短路保护。
+> ~~安全边界：PB10/HRTIM1_FLT3必须连接具有独立DESAT/OCP或等效短路保护能力的驱动器故障链。ADC软件过流只能在采样和软件响应延迟后关断，不能替代驱动器短路保护。~~
+>
+> **【修改为-硬件事实】** 现有UCC21520驱动板的`DISABLE`固定接低，且没有引出`nFAULT`、DESAT或OCP。PE0/PE1没有接到驱动器，PE5/PE6也没有实际故障源；PB10只有板上上拉和扩展接口。因此当前系统没有独立于MCU的自动短路关断链。本文只能在固定板卡上增强保护，不能把ADC或COMP描述成等效DESAT/OCP。
 
-### 1.1 赛题要求1~5对应目标
+### 1.1 本次修改标记
+
+~~本文直接在原指南基础上修改，保留原有HRTIM、ADC、DMA、USART和OLED的具体配置方法。需要相对原IOC或旧指南进行操作的地方统一标记为“本次修改-必须/建议/取消”或“保持现有”。~~
+
+**【修改为】** 本文直接在原指南基础上修改，保留原有HRTIM、ADC、DMA、USART和OLED具体配置方法，并用下表区分当前IOC事实与目标配置：
+
+| 标记 | 含义 |
+| --- | --- |
+| **【保持现有】** | `02OpenLoop.ioc`已经正确配置，不因本次保护调整而改变 |
+| **【必须修改】** | 完成联合项目保护基线前必须在CubeMX中执行 |
+| **【条件启用】** | 完成前置验证后才能加入，不属于首次配置 |
+| **【后续功能】** | 当前保持`Reset_State`，不参与当前软件和验收 |
+
+本次需要在CubeMX实际操作的入口汇总如下：
+
+| 优先级 | CubeMX入口 | 操作 |
+| --- | --- | --- |
+| 必须 | ADC1~5 > Parameter Settings | 增加AWD1；ADC1/3/4/5再增加AWD2 |
+| 必须 | ADC1~5 > NVIC Settings | ADC全局中断用于AWD和ADC错误，优先级1 |
+| 必须 | ~~PE5/PE6 Pinout、NVIC：仅取消EXTI5/6~~ **【修改为】PE0~PE3、PE5/PE6 Pinout及NVIC** | 六个引脚全部恢复`Reset_State`，关闭`EXTI9_5_IRQn`，删除旧Label |
+| 保持 | PB10、HRTIM Fault 3 | Digital Input、Active Low、Filter/Blanking None，作用A~E |
+| 条件 | COMP1/4/3、DAC1/DAC3 | 完成AWD验证后逐个增加，不一次启用全部COMP |
+| 条件 | HRTIM Fault 1/4 | 只有内部COMP路由通过无CPU关断验证后启用 |
+| 后续 | PD0启停按键 | 当前保持`Reset_State`，不配置GPIO、Pull、EXTI或NVIC |
+
+### 1.2 【新增】两个IOC的配置事实审计
+
+| 项目 | `03-1OpenLoop.ioc`（仅PFC） | `02OpenLoop.ioc`（联合工程） | 本指南处理 |
+| --- | --- | --- | --- |
+| ADC模拟看门狗 | 已包含ADC1 AWD1/AWD2和ADC2 AWD1 | 当前ADC1~5均未发现AWD配置 | 联合工程必须按第7节人工增加并重新生成代码 |
+| PD0 | 已配置`PFC_START_KEY`、GPIO Input、内部上拉 | 当前未分配 | 只作为后续功能记录，当前保持`Reset_State` |
+| HRTIM/ADC/DMA | PFC侧A/B、ADC1/2 | A~E、ADC1~5和五路循环DMA已经配置 | 保持联合IOC现有10 kHz时基、触发、Rank和DMA映射 |
+| PE0~PE3、PE5/PE6 | 部分引脚仍有旧用途 | 当前仍存在Gate Enable、预充/放电和nFAULT旧标签 | 全部取消功能并恢复`Reset_State` |
+
+**【新增-重要】** 本文第7节的AWD、ADC全局中断和第9节的GPIO清理是“目标配置”，不是对当前`02OpenLoop.ioc`状态的描述。完成CubeMX操作并重新生成代码前，不得宣称联合工程已经具有这些保护。
+
+### ~~1.2 赛题要求1~5对应目标~~ **【修改为】1.3 赛题要求1~5对应目标**
 
 本项目当前优先完成赛题要求1~5，CubeMX资源选择必须服务于下表，而不是为三相四线等无关拓扑增加复杂度。
 
@@ -71,10 +111,15 @@ Vdc_min = sqrt(3) x Vphase_peak / 0.90
 
 | 配置档 | 启用内容 | 保持关闭 |
 | --- | --- | --- |
-| P0-PFC：单相整流器调试 | HRTIM Master/A/B、ADC1/2、DMA1_CH1/2、PB10、PE0/PE5、USART2、IWDG | HRTIM C~F、ADC3~5、PE1/PE6、COMP/DAC |
-| P0-INV：当前逆变器调试 | HRTIM Master/C/D/E、ADC3/4/5、DMA2_CH1/2/3、PB10、PE1/PE6、USART2、软件I2C OLED、IWDG | HRTIM A/B/F输出、ADC1/2 DMA、PE0、COMP/DAC |
-| P1：整流器 + 三相逆变器 | HRTIM Master/A~E、ADC1~5、五路DMA、PE0~PE3、PE5/PE6、PB10 | HRTIM F、COMP/DAC |
-| P2：可选制动桥臂 | P1全部资源，再增加HRTIM F作为制动桥臂 | 中性桥臂功能、COMP/DAC仍默认关闭 |
+| ~~P0-PFC：单相整流器调试~~ | ~~HRTIM Master/A/B、ADC1/2、DMA1_CH1/2、PB10、PE0/PE5、USART2、IWDG~~ | ~~HRTIM C~F、ADC3~5、PE1/PE6、COMP/DAC~~ |
+| **【修改为】P0-PFC：单相整流器调试** | HRTIM Master/A/B、ADC1/2、DMA1_CH1/2、ADC看门狗、PB10、USART2、IWDG | HRTIM C~F、ADC3~5、COMP/DAC |
+| ~~P0-INV：当前逆变器调试~~ | ~~HRTIM Master/C/D/E、ADC3/4/5、DMA2_CH1/2/3、PB10、PE1/PE6、USART2、软件I2C OLED、IWDG~~ | ~~HRTIM A/B/F输出、ADC1/2 DMA、PE0、COMP/DAC~~ |
+| **【修改为】P0-INV：当前逆变器调试** | HRTIM Master/C/D/E、ADC3/4/5、DMA2_CH1/2/3、ADC看门狗、PB10、USART2、软件I2C OLED、IWDG | HRTIM A/B/F输出、ADC1/2 DMA、COMP/DAC |
+| ~~P1：整流器 + 三相逆变器~~ | ~~HRTIM Master/A~E、ADC1~5、五路DMA、PE0~PE3、PE5/PE6、PB10~~ | ~~HRTIM F、COMP/DAC~~ |
+| **【修改为】P1：整流器 + 三相逆变器** | HRTIM Master/A~E、ADC1~5、五路DMA、全部ADC看门狗、PB10、CSS、IWDG | HRTIM F；未验证的COMP/DAC |
+| **【本次新增】P1+：保护增强** | P1全部资源，再逐个验证COMP1、COMP4、COMP3及内部DAC阈值 | 未验证的其它COMP、HRTIM F |
+| ~~P2：可选制动桥臂~~ | ~~P1全部资源，再增加HRTIM F作为制动桥臂~~ | ~~中性桥臂功能、COMP/DAC仍默认关闭~~ |
+| **【修改为】P2：可选制动桥臂** | P1或P1+，再增加HRTIM F作为制动桥臂 | 中性桥臂功能 |
 
 当前`02OpenLoop.ioc`已经配置P1所需的大部分外设，但当前应用代码只运行P0-INV。配置档描述的是软件实际启动的资源，不表示每次都要删除IOC中暂未启动的外设。P1是赛题要求1~5的联合运行基线；P2只作为直流母线制动扩展，不用于三相四线或中性线控制。
 
@@ -94,9 +139,9 @@ Vdc_min = sqrt(3) x Vphase_peak / 0.90
 - ADC2规则组：PC0/VAC，DMA1 Channel 2；
 - USART2：PD5/PD6，460800 baud；
 - PA15/PB7软件I2C OLED；
-- PE0/PFC_GATE_EN、PE5/PFC_NFAULT_DIAG；
+- ~~PE0/PFC_GATE_EN、PE5/PFC_NFAULT_DIAG；~~ **【修改说明】** 当前IOC仍有这些旧分配，目标配置将PE0和PE5恢复`Reset_State`；
 - HRTIM Timer C/D/E、ADC Trigger 2、ADC3/4/5及DMA2 Channel 1/2/3；
-- PE1/INV_GATE_EN、PE6/INV_NFAULT_DIAG以及PE2/PE3控制输出；
+- ~~PE1/INV_GATE_EN、PE6/INV_NFAULT_DIAG以及PE2/PE3控制输出；~~ **【修改说明】** 当前IOC仍有这些旧分配，目标配置将PE1、PE2、PE3、PE6恢复`Reset_State`；
 - HSE CSS已经启用，IOC记录`RCC.EnbaleCSS=true`；
 - ADC1/2共享错误中断、ADC3/4/5错误中断及五路DMA完成中断；
 - IWDG Prescaler=64、Reload=249，用户代码在外设和安全状态建立后启动。
@@ -111,16 +156,26 @@ pFaultCfg.Filter   = HRTIM_FAULTFILTER_NONE;
 
 因此当前 PB10 已经是外部数字 Fault 路径，不需要改成内部 Fault。
 
+~~【本次修改-硬件事实】上面PE0/PE1和PE5/PE6只是当前IOC中的标签与模式，不代表原理图已经形成对应的驱动使能和故障链。PB10也没有接到驱动器自动故障输出，目前只适合作为扩展接口上的手动急停或Fault注入输入。~~
+
+**【修改为-硬件事实】** PE0~PE3、PE5/PE6只是当前IOC遗留的标签和模式，目标配置全部恢复`Reset_State`。PB10没有接到驱动器自动故障输出，当前只保留Fault路由能力，可通过受控测试拉低验证，不能计入自动OCP/DESAT保护链。
+
 ### 3.2 当前IOC结论和小幅优化项
 
-当前IOC已经记录`STM32Cube FW_G4 V1.6.2`、`LastFirmware=false`和工程名`02OpenLoop`，这三项不需要修改。为完成要求1~5，也不需要增加第四桥臂、COMP、DAC、硬件I2C或UART DMA。
+~~当前IOC已经记录`STM32Cube FW_G4 V1.6.2`、`LastFirmware=false`和工程名`02OpenLoop`，这三项不需要修改。为完成要求1~5，也不需要增加第四桥臂、COMP、DAC、硬件I2C或UART DMA。~~
+
+**【修改为】** 当前IOC已经记录`STM32Cube FW_G4 V1.6.2`、`LastFirmware=false`和工程名`02OpenLoop`，这三项不需要修改。为完成要求1~5，不需要增加第四桥臂、硬件I2C或UART DMA。
+
+~~【本次修改-必须】需要在CubeMX中新增ADC1~5模拟看门狗，并删除PE5/PE6在没有外部接线时的EXTI保护角色。~~
+
+**【修改为-必须】** 在CubeMX中新增ADC1~5模拟看门狗；将PE0~PE3、PE5/PE6全部恢复`Reset_State`并关闭`EXTI9_5_IRQn`。**【条件启用】** COMP1/4/3和DAC阈值作为第二阶段增强，不要求在第一次修改IOC时与全部看门狗同时启用。
 
 继续使用当前IOC前应完成以下核对；只有实测不满足时才回到CubeMX小幅调整：
 
 1. 用示波器验证A~E在`Set Source=CMP1`、`Reset Source=CMP1`、Up-Down和Valley ROM组合下形成正确的10 kHz中心对齐互补PWM；
 2. 验证Master CMP2对应的Trigger 1/2处在实际功率板的低噪声采样窗口；若采样受开关沿污染，只移动对应Trigger来源或Compare位置，不先改变整个HRTIM时基；
-3. 保持PB10为数字Fault 3、低有效、Filter None和Blanking None；数字滤波不能替代驱动器DESAT/OCP的快速保护；
-4. 保持当前CSS配置，并在NMI中实现PE0/PE1拉低和全部HRTIM输出关闭，不能只依赖默认死循环；
+3. ~~保持PB10为数字Fault 3、低有效、Filter None和Blanking None，并建议外接急停按钮；~~ **【修改为】** 保持PB10为数字Fault 3、低有效、Filter None和Blanking None；当前板卡未接自动故障源，PB10仅保留Fault路由和受控故障注入能力；
+4. ~~保持当前CSS配置，并在NMI中关闭全部HRTIM输出后继续操作PE0/PE1；~~ **【修改为】** 保持当前CSS配置，并在NMI中立即停止HRTIM A~E输出、锁存时钟故障；PE0/PE1已恢复`Reset_State`，不再出现在NMI关断逻辑中；
 5. 500 ns死区只作为低压起点。为满足THD和效率，最终应根据驱动传播延迟和上下管波形逐步减小到可靠范围，必要时再增加软件死区补偿；
 6. 10 kHz先保持不变。只有LC滤波和闭环调试后仍无法满足THD或动态性能，才评估20 kHz，并同步重算HRTIM Period、ADC触发、控制器系数和实时预算；
 7. 重新生成代码后比较`hrtim.c`、`adc.c`、`stm32g4xx_hal_msp.c`和`dma.c`，确认CubeMX没有覆盖用户启动顺序或安全关断代码。
@@ -168,13 +223,14 @@ VUV + VVW + VWU = 0
 
 | 功能 | 引脚 | CubeMX模式 | 初始状态 |
 | --- | --- | --- | --- |
-| PFC_GATE_EN | PE0 | GPIO Output Push-Pull | Low，必须板级下拉 |
-| INV_GATE_EN | PE1 | GPIO Output Push-Pull | Low，必须板级下拉 |
-| PRECHARGE_EN | PE2 | GPIO Output Push-Pull | Low |
-| DISCHARGE_EN/BRAKE_EN | PE3 | GPIO Output Push-Pull | Low |
-| PFC_NFAULT_DIAG | PE5 | GPIO EXTI Falling Edge | 外部上拉，低有效 |
-| INV_NFAULT_DIAG | PE6 | GPIO EXTI Falling Edge | 外部上拉，低有效 |
-| DRV_NFAULT_ANY | PB10 | HRTIM1_FLT3 | 外部上拉，低有效 |
+| ~~PFC_GATE_EN / PFC_GATE_EN_RESERVED~~ **【修改为】不使用** | PE0 | ~~GPIO Output Push-Pull~~ **【修改为】`Reset_State`** | 不生成GPIO初始化和Label |
+| ~~INV_GATE_EN / INV_GATE_EN_RESERVED~~ **【修改为】不使用** | PE1 | ~~GPIO Output Push-Pull~~ **【修改为】`Reset_State`** | 不生成GPIO初始化和Label |
+| ~~PRECHARGE_EN / PRECHARGE_EN_RESERVED~~ **【修改为】不使用** | PE2 | ~~GPIO Output Push-Pull~~ **【修改为】`Reset_State`** | 当前不提供MCU自动预充控制 |
+| ~~DISCHARGE_EN/BRAKE_EN / DISCHARGE_EN_RESERVED~~ **【修改为】不使用** | PE3 | ~~GPIO Output Push-Pull~~ **【修改为】`Reset_State`** | 当前不提供MCU自动放电或制动控制 |
+| ~~PFC_NFAULT_DIAG / PFC_FAULT_RESERVED~~ **【修改为】不使用** | PE5 | ~~GPIO EXTI Falling Edge或GPIO Input~~ **【修改为】`Reset_State`** | 删除Label并关闭对应EXTI |
+| ~~INV_NFAULT_DIAG / INV_FAULT_RESERVED~~ **【修改为】不使用** | PE6 | ~~GPIO EXTI Falling Edge或GPIO Input~~ **【修改为】`Reset_State`** | 删除Label并关闭对应EXTI |
+| ~~DRV_NFAULT_ANY / MANUAL_TRIP~~ **【修改为】FLT3_TEST_RESERVED** | PB10 | HRTIM1_FLT3 | 外部约10 kOhm上拉、低有效；无自动故障源，仅保留测试和扩展能力 |
+| **【后续功能】SYSTEM_START_KEY** | PD0 | 当前为`Reset_State` | 后续启停按键预留，当前不配置 |
 | VOFA_TX/RX | PD5/PD6 | USART2_TX/RX | 460800、8N1 |
 | OLED_SCL | PA15 | GPIO Output Push-Pull | 软件I2C |
 | OLED_SDA | PB7 | GPIO Output Open-Drain | 软件I2C，外部上拉 |
@@ -213,7 +269,9 @@ Flash等待周期以CubeMX为准，生成代码应使用适用于170 MHz的延�
 | System Core > NVIC | Priority Group | Group 4 |
 | System Core > RCC | CSS | Enable，当前IOC已启用 |
 
-当前IOC已记录`RCC.EnbaleCSS=true`，生成的`SystemClock_Config()`应调用`HAL_RCC_EnableCSS()`。CSS触发NMI后必须先拉低PE0/PE1、关闭全部HRTIM输出、锁存时钟故障，再等待IWDG复位或停留在安全态；不能只使用CubeMX默认空循环。NMI软件收尾不替代Gate Enable板级下拉和HRTIM Fault硬件关断。
+当前IOC已记录`RCC.EnbaleCSS=true`，生成的`SystemClock_Config()`应调用`HAL_RCC_EnableCSS()`。~~CSS触发NMI后先操作PE0/PE1，再关闭全部HRTIM输出并锁存时钟故障。~~
+
+**【修改为-必须】** CSS触发NMI后立即禁止新的Compare更新并停止HRTIM A~E输出，再锁存时钟故障、停止正常控制并等待IWDG复位或停留在安全态。PE0/PE1已恢复`Reset_State`，NMI中不得再访问这两个引脚；CubeMX默认空循环不能满足安全关断要求。
 
 ### 5.3 Project Manager
 
@@ -270,8 +328,10 @@ Timer A、B、C、D、E逐个使用下表。P2启用F时，Timer F也使用同�
 | Waveform Timer Control | Repetition Update | Enable | `HRTIM_UPDATEONREPETITION_ENABLED` |
 | Waveform Timer Control | Push-Pull Mode | Disable | 互补输出由Dead Time逻辑产生 |
 | Timer Configuration | Dead Time Insertion | Enable | `HRTIM_TIMDEADTIMEINSERTION_ENABLED` |
-| Timer Configuration | Fault Enable | Fault 3 | A~E全部响应PB10 |
+| Timer Configuration | Fault Enable | Fault 3 | 【保持现有】A~E全部响应PB10 |
 | Timer Configuration | Fault Lock | Read/Write | 调试期不锁死配置 |
+
+【本次新增-条件】进入P1+且内部路由通过无CPU验证后，A/B的Fault Enable由`Fault 3`增加为`Fault 1 + Fault 3`，C/D/E由`Fault 3`增加为`Fault 3 + Fault 4`。P1基线仍只使用Fault 3，不得在尚未验证COMP极性时提前加入Fault 1/4。
 | Timer Configuration | DMA Requests | None | 控制更新由ADC DMA回调和预装载完成 |
 | Timer Configuration | Update Gating | Independent | 与现有设计一致 |
 
@@ -318,7 +378,7 @@ Output 2不单独配置Set/Reset事件，由Dead Time模块根据Output 1生成�
 
 生成代码后，A~E必须分别出现`HAL_HRTIM_TimeBaseConfig()`、`HAL_HRTIM_WaveformTimerControl()`、`HAL_HRTIM_WaveformTimerConfig()`、`HAL_HRTIM_WaveformCompareConfig()`、`HAL_HRTIM_WaveformOutputConfig()`和`HAL_HRTIM_DeadTimeConfig()`。仅看到引脚有波形不能证明Set/Reset、ROM、Fault和预装载边界全部正确。
 
-HRTIM计数器启动前必须完成DLL校准并等待就绪。DLL就绪只代表高分辨率时基可用，不代表PWM引脚已经开放，更不代表PE0/PE1已经使能；这三个状态必须由软件分别管理。
+HRTIM计数器启动前必须完成DLL校准并等待就绪。DLL就绪只代表高分辨率时基可用，不代表PWM引脚已经开放。~~PE0/PE1未接驱动器但仍作为预留输出保持Low。~~ **【修改为】** PE0/PE1均为`Reset_State`，软件只管理“HRTIM计数器运行”和“HRTIM输出引脚开放”两个状态。
 
 ### 6.7 ADC Trigger 1和Trigger 2
 
@@ -355,12 +415,16 @@ CubeMX字段应设置为：
 | Fault Configuration | Polarity | Active Low | `HRTIM_FAULTPOLARITY_LOW` |
 | Fault Configuration | Filter | None | 首次验证不添加延迟 |
 | Fault Configuration | Lock | Read/Write | 调试期可修改 |
-| Fault Configuration | Blanking Source | None | 禁止把真实DESAT/OCP屏蔽掉 |
+| Fault Configuration | Blanking Source | None | ~~手动急停路径不使用消隐~~ **【修改为】** 保留的PB10测试/扩展Fault路径不使用消隐 |
 | Fault Configuration | Enable Fault Line 3 | Enable | `HAL_HRTIM_FaultModeCtl()` |
 | Timer A~E | Fault Enable | Fault 3 | 所有已启用桥臂同时关闭 |
 | Output A1~E2 | Fault Level | Inactive | 故障输出无效态 |
 
-Fault关断由HRTIM硬件完成，不依赖中断。`HRTIM1_FLT_IRQn`只负责拉低PE0/PE1、记录故障并进入软件故障锁存。
+Fault关断由HRTIM硬件完成，不依赖中断。~~`HRTIM1_FLT_IRQn`继续保持PE0/PE1为Low、记录故障并进入软件故障锁存。~~ **【修改为】** `HRTIM1_FLT_IRQn`只记录Fault来源、停止全部相关HRTIM输出、锁存故障并禁止自动恢复，不访问已处于`Reset_State`的PE0/PE1。
+
+~~【本次修改-硬件事实】建议使用现有扩展接口把急停接到PB10与GND之间，使Fault 3具备实际手动关断作用。~~
+
+**【修改为-硬件事实】** PB10目前未接驱动器故障输出，也不把新增外部急停接线作为当前方案前提。Fault 3仅保留硬件路由，可在受控无功率测试中临时拉低PB10验证A~E无CPU关断；正常运行时它不会主动检测OCP、DESAT或短路，不能计入当前自动保护链。
 
 ### 6.9 HRTIM F制动扩展
 
@@ -434,9 +498,117 @@ uint16_t adc5_dma[2]; /* [0]=IW,   [1]=VWU */
 
 ### 7.4 ADC校准
 
-每次上电在启动DMA和HRTIM计数器前，依次对ADC1~5执行单端校准。校准期间PE0/PE1必须Low，所有HRTIM输出关闭。
+~~每次上电在启动DMA和HRTIM计数器前，依次对ADC1~5执行单端校准。校准期间PE0/PE1必须Low，所有HRTIM输出关闭。~~
+
+**【修改为】** 每次上电在启动DMA和HRTIM计数器前，依次对ADC1~5执行单端校准。校准期间HRTIM A~E计数器和全部输出关闭；PE0/PE1已为`Reset_State`，不再作为校准条件。
 
 生成代码只负责ADC配置，校准和启动顺序属于用户代码。若任一路校准失败，禁止启动任何功率输出。
+
+### 7.5 【本次新增-必须】Analog Watchdog总体配置
+
+ADC1~5均保留现有规则组、HRTIM外部触发和循环DMA，在此基础上增加模拟看门狗。无需改变HRTIM Trigger 1/2、ADC Rank或DMA通道。
+
+**【必须修改-当前差异】** `02OpenLoop.ioc`当前没有ADC1~5的AWD配置。下列AWD字段均是需要在CubeMX中新增的目标值；只有重新生成后在各ADC初始化函数中看到相应`HAL_ADC_AnalogWDGConfig()`，并完成越界注入测试，才能判定保护生效。仅PFC工程`03-1OpenLoop.ioc`中的AWD配置不能证明联合工程已经具备相同功能。
+
+每个ADC按以下原则分配：
+
+- `Analog Watchdog 1`用于Rank 1电流通道，ADC2例外，用于VAC；
+- `Analog Watchdog 2`用于Rank 2电压通道；
+- AWD1阈值具有当前ADC的12位分辨率；
+- AWD2/3硬件阈值只有8位有效分辨率，12位ADC结果的最低4位被忽略；
+- 所有看门狗都产生ADC全局中断，但关断仍由ADC IRQ中的软件Trip完成，不会自动进入HRTIM Fault。
+
+| ADC | 看门狗 | 监视频道 | 作用 | 初始过滤 |
+| --- | --- | --- | --- | --- |
+| ADC1 | AWD1 | ADC_CHANNEL_2 / IPFC | 双向PFC过流窗口 | 1次越界 |
+| ADC1 | AWD2 | ADC_CHANNEL_7 / VBUS | 母线过压；运行态可增加欠压 | 无过滤 |
+| ADC2 | AWD1 | ADC_CHANNEL_6 / VAC | 采样贴轨、严重输入过压 | 1次越界 |
+| ADC3 | AWD1 | ADC_CHANNEL_12 / IU | U相双向过流窗口 | 1次越界 |
+| ADC3 | AWD2 | ADC_CHANNEL_7 / VUV | 线电压贴轨、严重过压 | 无过滤 |
+| ADC4 | AWD1 | ADC_CHANNEL_12 / IV | V相双向过流窗口 | 1次越界 |
+| ADC4 | AWD2 | ADC_CHANNEL_1 / VVW | 线电压贴轨、严重过压 | 无过滤 |
+| ADC5 | AWD1 | ADC_CHANNEL_13 / IW | W相双向过流窗口 | 1次越界 |
+| ADC5 | AWD2 | ADC_CHANNEL_11 / VWU | 线电压贴轨、严重过压 | 无过滤 |
+
+### 7.6 CubeMX中配置AWD1
+
+依次打开 `Analog > ADCx > Parameter Settings > Analog WatchDog 1`。CubeMX 6.17中可见字段可能随窗口宽度换行，但应设置为以下HAL语义：
+
+| CubeMX字段 | ADC1/3/4/5设置 | ADC2设置 | 生成代码 |
+| --- | --- | --- | --- |
+| Enable Analog WatchDog 1 | Enable | Enable | 调用`HAL_ADC_AnalogWDGConfig()` |
+| WatchDog 1 Mode | Single regular channel | Single regular channel | `ADC_ANALOGWATCHDOG_SINGLE_REG` |
+| WatchDog Channel | 对应Rank 1的ADC Channel | ADC2_IN6 | `sAnalogWDGConfig.Channel` |
+| IT Mode | Enable | Enable | `sAnalogWDGConfig.ITMode = ENABLE` |
+| High Threshold | 标定得到的12位上限 | VAC宽窗口上限 | 0~4095 |
+| Low Threshold | 标定得到的12位下限 | VAC宽窗口下限 | 0~4095 |
+| Filtering Configuration | None/1 sample | None/1 sample | `ADC_AWD_FILTERING_NONE` |
+
+首次配置时不要直接填额定电流对应的最终阈值。应先使用安全但较宽的低压调试窗口，确认通道、极性和中断来源正确，再按实测标定收紧。
+
+### 7.7 CubeMX中配置AWD2
+
+在每个具有Rank 2的ADC页面打开 `Analog WatchDog 2`：
+
+| CubeMX字段 | 设置值 | 说明 |
+| --- | --- | --- |
+| Enable Analog WatchDog 2 | Enable | ADC1/3/4/5启用，ADC2不启用 |
+| WatchDog 2 Mode | Single regular channel | 只监视本ADC的Rank 2通道 |
+| IT Mode | Enable | 越界进入对应ADC IRQ |
+| High Threshold | ~~标定12位上限右移4位~~ **【修改为】填写标定得到的0~4095十二位ADC码** | HAL内部映射到AWD2的8位有效硬件阈值 |
+| Low Threshold | ~~标定12位下限右移4位~~ **【修改为】填写标定得到的0~4095十二位ADC码** | HAL内部映射到AWD2的8位有效硬件阈值 |
+| Filtering Configuration | None | G4的AWD2不使用AWD1连续样本过滤 |
+
+然后回到 `Regular Conversion` 的Rank 2通道行，在 `Monitored By` 字段选择 `Analog WatchDog 2`。生成代码可能对同一AWD2通道再次调用`HAL_ADC_AnalogWDGConfig()`，必须核对`WatchdogNumber = ADC_ANALOGWATCHDOG_2`和Channel与Rank 2一致。
+
+~~AWD2阈值由用户换算：~~
+
+~~`awd2_low_8bit = adc_low_12bit >> 4`，`awd2_high_8bit = adc_high_12bit >> 4`。~~
+
+**【修改为-重要】** CubeMX和`ADC_AnalogWDGConfTypeDef.HighThreshold/LowThreshold`仍填写0~4095的12位ADC码；G4 V1.6.2 HAL在`HAL_ADC_AnalogWDGConfig()`内部通过`ADC_AWD23THRESHOLD_SHIFT_RESOLUTION()`完成映射。AWD2最终只有高8位参与比较，所以低4位变化不会改变实际门限，但用户代码和CubeMX中不得提前右移4位。
+
+### 7.8 阈值换算和交流量限制
+
+电压阈值按实测VDDA计算：
+
+```text
+ADC_code = round(Vadc / VDDA x 4095)
+```
+
+带中点偏置的电流通道必须用实测零点和斜率：
+
+```text
+code_pos = round(offset_code + slope_code_per_A x (+Itrip))
+code_neg = round(offset_code + slope_code_per_A x (-Itrip))
+low_code = min(code_pos, code_neg)
+high_code = max(code_pos, code_neg)
+```
+
+IPFC采样已知是电流增大、ADC电压降低的极性，因此不能假设正向过流一定触发High Threshold。
+
+【本次新增-重要】VAC和VUV/VVW/VWU属于带中点偏置的交流瞬时量，正常波形每周期都会经过中点。AWD窗口必须覆盖整个正常正负峰值，只用于检测贴近ADC电源轨或超过允许峰值：
+
+- 不能用AWD的Low Threshold直接判断交流输入丢失；
+- 不能用AWD直接判断输出RMS欠压；
+- 不能用AWD直接判断30/60 Hz频率或三相不平衡；
+- 上述功能必须由软件在完整周期窗口内计算RMS、频率和一致性后判断。
+
+VBUS是单极性直流量，可以在运行态使用上下阈值。启动阶段应先把低阈值设为0或暂不启用欠压判断；进入PFC运行态后再通过`HAL_ADC_AnalogWDGConfig()`切换到运行窗口，避免上电时母线尚未建立便触发永久故障。
+
+### 7.9 ADC中断和生成代码核对
+
+CubeMX `NVIC Settings`中启用：
+
+- `ADC1 and ADC2 global interrupt`；
+- `ADC3 global interrupt`；
+- `ADC4 global interrupt`；
+- `ADC5 global interrupt`。
+
+统一设置抢占优先级1。生成代码应在每个ADC初始化函数中先完成`HAL_ADC_ConfigChannel()`，再出现相应的`HAL_ADC_AnalogWDGConfig()`。IRQHandler必须调用`HAL_ADC_IRQHandler()`。
+
+HAL默认通过`HAL_ADC_LevelOutOfWindowCallback()`通知模拟看门狗越界。若需要区分AWD1和AWD2，应在IRQ处理或回调入口结合ADC实例、AWD标志/状态记录来源，不要仅凭最后一次DMA数组值猜测来源。
+
+AWD回调或ADC IRQ用户处理只允许：记录ADC实例与AWD编号、关闭HRTIM A~E输出、锁存故障并停止IWDG刷新。不得调用OLED、阻塞USART、RMS计算或控制算法。模拟看门狗在10 kHz外部触发下最坏可能等待接近一个100 us采样周期，因此属于过载保护，不是短路保护。
 
 ## 8. DMA和DMAMUX
 
@@ -502,25 +674,45 @@ PFC与逆变快照均来自同一个100 us HRTIM周期，但二者无需形成�
 
 ## 9. GPIO和EXTI
 
-### 9.1 安全输出
+### 9.1 ~~安全输出~~ **【修改为】取消使用的GPIO**
 
-| 引脚 | Mode | Pull | Speed | User Label | 初始电平 |
-| --- | --- | --- | --- | --- | --- |
-| PE0 | Output Push-Pull | No Pull | Low | PFC_GATE_EN | Low |
-| PE1 | Output Push-Pull | No Pull | Low | INV_GATE_EN | Low |
-| PE2 | Output Push-Pull | No Pull | Low | PRECHARGE_EN | Low |
-| PE3 | Output Push-Pull | No Pull | Low | DISCHARGE_EN | Low |
+| 引脚 | ~~原Mode/Label~~ | **【修改为】当前Mode** | Pull/Speed | **【修改后结果】** |
+| --- | --- | --- | --- | --- |
+| PE0 | ~~Output Push-Pull / PFC_GATE_EN_RESERVED~~ | **【修改为】`Reset_State`** | 不适用 | 不生成PE0初始化和宏 |
+| PE1 | ~~Output Push-Pull / INV_GATE_EN_RESERVED~~ | **【修改为】`Reset_State`** | 不适用 | 不生成PE1初始化和宏 |
+| PE2 | ~~Output Push-Pull / PRECHARGE_EN_RESERVED~~ | **【修改为】`Reset_State`** | 不适用 | 不生成PE2初始化和宏 |
+| PE3 | ~~Output Push-Pull / DISCHARGE_EN_RESERVED~~ | **【修改为】`Reset_State`** | 不适用 | 不生成PE3初始化和宏 |
 
-CubeMX生成的`MX_GPIO_Init()`必须先写Low，再把引脚切换为输出。PE0/PE1的板级下拉是复位阶段安全保证，不能用MCU内部初值代替。
+~~CubeMX生成的`MX_GPIO_Init()`先写Low，再把PE0~PE3切换为输出并保留相关Label。~~
+
+**【修改为】** 在Pinout中依次右键PE0、PE1、PE2、PE3并选择`Reset_State`，删除旧User Label。重新生成后，`MX_GPIO_Init()`和`main.h`不应再包含这四个引脚。当前项目不通过MCU控制Gate Enable、预充、放电或制动；实际功率输出关断只依赖HRTIM Output Stop和外部断电条件。
 
 ### 9.2 故障诊断EXTI
 
 | 引脚 | Mode | Pull | User Label | 用途 |
 | --- | --- | --- | --- | --- |
-| PE5 | External Interrupt Mode with Falling Edge | Pull-up或板级上拉 | PFC_NFAULT_DIAG | 记录PFC驱动故障来源 |
-| PE6 | External Interrupt Mode with Falling Edge | Pull-up或板级上拉 | INV_NFAULT_DIAG | 记录逆变驱动故障来源 |
+| PE5 | ~~External Interrupt Mode with Falling Edge / GPIO Input~~ **【修改为】`Reset_State`** | ~~Pull-up或No Pull~~ **【修改为】不适用** | ~~PFC_NFAULT_DIAG / PFC_FAULT_RESERVED~~ **【修改为】删除Label** | 不生成GPIO或EXTI初始化 |
+| PE6 | ~~External Interrupt Mode with Falling Edge / GPIO Input~~ **【修改为】`Reset_State`** | ~~Pull-up或No Pull~~ **【修改为】不适用** | ~~INV_NFAULT_DIAG / INV_FAULT_RESERVED~~ **【修改为】删除Label** | 不生成GPIO或EXTI初始化 |
 
-PE5/PE6共享`EXTI9_5_IRQn`。EXTI仅用于诊断和软件锁存，快速关断仍由PB10/HRTIM1_FLT3完成。
+~~PE5/PE6共享`EXTI9_5_IRQn`。EXTI仅用于诊断和软件锁存，快速关断仍由PB10/HRTIM1_FLT3完成。~~
+
+~~**【修改为-取消】** PE5/PE6可暂时保留为GPIO Input/Analog或预留故障接口。~~
+
+**【修改为-必须】** 在Pinout中将PE5、PE6明确恢复为`Reset_State`，删除Label，并在NVIC中关闭`EXTI9_5_IRQn`。当前代码、状态机和IWDG健康检查不得读取这两个引脚；只有硬件将来真实接入确定电平含义的故障源后，才重新设计其模式。
+
+### 9.3 【后续功能】PD0启停按键预留
+
+PD0不属于当前联合工程配置，也不参与本次验收。当前CubeMX保持：
+
+| CubeMX位置 | 字段 | 当前设置 |
+| --- | --- | --- |
+| Pinout | PD0 | `Reset_State` |
+| GPIO Settings | Mode/Pull/User Label | 不配置 |
+| System Core > NVIC | EXTI line 0 | Disable |
+
+~~将仅PFC工程中的`PD0/PFC_START_KEY`直接复制到联合工程，并立即作为启动许可。~~
+
+**【后续功能】** 将来确需按键时，推荐命名为`SYSTEM_START_KEY`，配置为GPIO Input、内部上拉、低有效常开按键；由1 ms任务轮询并软件消抖，不启用EXTI。上电后必须先检测到稳定释放才接受新的按下-释放周期。该按键只能提供正常启停命令，不能作为急停、过流关断或故障复位输入，故障锁存后也不得直接重新开放PWM。
 
 ## 10. USART2和软件I2C OLED
 
@@ -585,34 +777,154 @@ LSI误差较大，必须在实板上测量实际复位时间。
 - 已启用ADC的DMA序列持续更新；
 - 快速控制心跳持续变化；
 - HRTIM没有未处理Fault；
+- ADC1~5没有AWD越界或ADC错误；
 - 状态机没有超时；
-- PE0/PE1实际状态与状态机一致；
+- ~~PE0/PE1实际状态与状态机一致，或保持Low作为预留状态；~~ **【修改为】** 所有应关闭的HRTIM输出确实处于关闭状态；PE0~PE3、PE5/PE6均为`Reset_State`且不参与健康判断；
 - 母线和电流没有越限。
 
 调试构建可在SYS页面启用IWDG Debug Freeze；若页面没有该字段，在用户代码调用`__HAL_DBGMCU_FREEZE_IWDG()`。量产构建不要依赖调试冻结。
 
-复位后必须读取并记录`RCC_FLAG_IWDGRST`。发生IWDG复位时，PE0/PE1、预充、放电和全部PWM默认保持关闭，不允许沿用裸板试波程序的自动输出启动流程。只有人工启动命令、自检通过、Fault输入恢复、母线处于安全范围且两套采样心跳均正常后，才能重新开放功率级。
+复位后必须读取并记录`RCC_FLAG_IWDGRST`。发生IWDG复位时，~~HRTIM A~E输出保持关闭，PE0~PE3保持Low，并等待人工启动命令~~ **【修改为】HRTIM A~E输出保持关闭；PE0~PE3、PE5/PE6和PD0均保持`Reset_State`**。不得沿用裸板试波程序的自动输出启动流程。只有显式的软件调试许可、自检通过、Fault输入无效、母线处于安全范围且两套采样心跳均正常后，才能重新开放功率级；当前流程不依赖PD0按键。
 
 ## 12. COMP和DAC
 
-首版保持：
+### 12.1 【新增】保护配置分层
 
-- COMP1~7全部关闭；
-- DAC1/DAC3/DAC4内部阈值通道全部关闭；
-- HRTIM内部Fault 1/2/4/5/6不启用；
-- 不把COMP作为PE0/PE1允许启动的必要条件。
+| 层级 | 外设或机制 | 当前状态 | 能力边界 |
+| --- | --- | --- | --- |
+| **【必须修改】保护基线** | ADC1~5 AWD、ADC/DMA错误处理、HSE CSS、IWDG、统一HRTIM Output Stop和软件故障锁存 | 联合IOC尚缺AWD及对应完整处理，需要按第7、11、13、14节补齐 | 依赖ADC触发或CPU响应，属于过载、异常和失控保护，不是短路瞬时保护 |
+| **【保持现有但无真实故障源】** | PB10/HRTIM1_FLT3 | 数字输入、低有效、无Filter/Blanking并作用A~E | 可验证HRTIM无CPU关断，但当前未接OCP/DESAT/nFAULT，正常运行不会自动触发 |
+| **【条件启用】保护增强** | COMP1/IPFC、COMP4/IU、COMP3/VBUS及DAC1/DAC3内部阈值 | 默认关闭，完成AWD验证后逐个加入 | COMP1/4只能覆盖双极性电流的一个方向；内部Fault路由必须通过CPU暂停测试 |
 
-即使COMP关闭，以下链路不能删除：
+PE0~PE3、PE5/PE6均为`Reset_State`，PD0为后续启停功能，它们不属于上述保护链。没有独立DESAT/OCP时，任何一级配置都不能被描述为完整短路保护。
+
+~~首版保持：~~
+
+- ~~COMP1~7全部关闭；~~
+- ~~DAC1/DAC3/DAC4内部阈值通道全部关闭；~~
+- ~~HRTIM内部Fault 1/2/4/5/6不启用；~~
+- ~~不把COMP作为PE0/PE1允许启动的必要条件。~~ **【修改为】** COMP只参与HRTIM输出开放许可；PE0/PE1不再存在于目标GPIO配置中。
+
+~~即使COMP关闭，以下链路不能删除：~~
+
+~~驱动器DESAT/OCP -> 开漏nFAULT汇总 -> PB10/HRTIM1_FLT3 -> HRTIM A~E硬件无效态。~~
+
+**【修改为-硬件事实】** 当前驱动板不存在上述DESAT/OCP和`nFAULT`链。最终基线先使用第7.5~7.9节ADC模拟看门狗；然后按本节逐个增加COMP1、COMP4和COMP3。不要一次打开COMP1~7。
+
+### ~~12.1 COMP资源选择~~ **【修改为】12.2 COMP资源选择**
+
+| COMP | 正输入 | 负输入阈值 | 建议用途 | 最终响应路径 |
+| --- | --- | --- | --- | --- |
+| COMP1 | PA1/IPFC，`COMP_INPUT_PLUS_IO1` | DAC1 Channel 1 | PFC电流一个方向的快速阈值 | 优先验证内部Fault 1；否则COMP IRQ |
+| COMP4 | PB0/IU，`COMP_INPUT_PLUS_IO1` | DAC3 Channel 2 | U相电流一个方向的快速阈值 | 优先验证内部Fault 4；否则COMP IRQ |
+| COMP3 | PC1/VBUS，`COMP_INPUT_PLUS_IO2` | DAC3 Channel 1 | 母线过压 | COMP IRQ；保留FLT3给PB10 |
+
+【本次新增-限制】IV/PD8和IW/PD9没有同脚COMP正输入，固定PCB且不加跳线时无法得到三相全部电流的快速COMP覆盖。带约1.65 V偏置的双向电流使用单个比较器和一个阈值只能保护一个方向；另一方向仍由ADC窗口保护。因此不得把COMP1/4写成“双向硬件过流”。
+
+### ~~12.2 内部DAC阈值~~ **【修改为】12.3 内部DAC阈值**
+
+在 `Analog > DAC1/DAC3` 中只启用内部阈值所需通道，不分配外部GPIO：
+
+| DAC | Channel | 用途 | Trigger | Output Buffer |
+| --- | --- | --- | --- | --- |
+| DAC1 | Channel 1 | COMP1/IPFC阈值 | None/Software | 仅内部连接；外部输出关闭 |
+| DAC3 | Channel 1 | COMP3/VBUS阈值 | None/Software | 仅内部连接；外部输出关闭 |
+| DAC3 | Channel 2 | COMP4/IU阈值 | None/Software | 仅内部连接；外部输出关闭 |
+
+DAC初值必须保持在不会误开放功率级的安全方向。先启动DAC并等待稳定，再启动COMP；最后才允许HRTIM输出。阈值码为：
 
 ```text
-驱动器DESAT/OCP
-    -> 开漏nFAULT汇总
-    -> PB10/HRTIM1_FLT3
-    -> HRTIM A~E（以及已启用的F）硬件无效态
-    -> Fault ISR拉低PE0/PE1并记录故障
+DAC_code = round(Vtrip / VDDA x 4095)
 ```
 
-以后启用COMP时，应单独验证输入极性、DAC阈值、迟滞、消隐和COMP到HRTIM的内部路由，不能直接沿用未经验证的Fault编号。
+使用实测VDDA和采样标定结果，不直接把3.3 V和理论传感器比例当成最终值。
+
+### ~~12.3 COMP1具体配置~~ **【修改为】12.4 COMP1具体配置**
+
+进入 `Analog > COMP1 > Parameter Settings`：
+
+| 字段 | 设置值 | 说明 |
+| --- | --- | --- |
+| Plus Input | IO1 / PA1 | 与ADC1_IN2共用IPFC模拟节点 |
+| Minus Input | DAC1 Channel 1 | 内部阈值 |
+| Output Polarity | 根据IPFC传感器极性选择 | 先用静态输入验证故障方向 |
+| Hysteresis | 10 mV | 初始值，噪声实测后调整 |
+| Blanking Source | None | 首轮不掩盖真实越界 |
+| Trigger Mode | Interrupt on fault edge | 作为内部Fault的软件后备 |
+| Lock | Disable/Read-Write | 调试完成前不锁 |
+
+PA1已经分配给ADC1_IN2，CubeMX可能不允许再次在Pinout中把同一脚显示为COMP1_INP。若出现冲突：
+
+1. 保留PA1的ADC1_IN2分配；
+2. 不把PA1改成普通数字GPIO；
+3. 先让CubeMX生成COMP句柄和时钟；
+4. 在USER CODE中按`COMP_INPUT_PLUS_IO1`补充COMP1初始化；
+5. 核对PA1仍为Analog、No Pull；
+6. 验证启用COMP1前后ADC1零点、增益和噪声。
+
+### ~~12.4 COMP4具体配置~~ **【修改为】12.5 COMP4具体配置**
+
+进入 `Analog > COMP4 > Parameter Settings`：
+
+| 字段 | 设置值 | 说明 |
+| --- | --- | --- |
+| Plus Input | IO1 / PB0 | 与ADC3_IN12共用IU节点 |
+| Minus Input | DAC3 Channel 2 | 与COMP1使用独立阈值 |
+| Output Polarity | 按IU采样极性选择 | 只覆盖一个电流方向 |
+| Hysteresis | 10 mV | 初始值 |
+| Blanking Source | None | 首轮不使用消隐 |
+| Trigger Mode | Interrupt on fault edge | 作为内部Fault的软件后备 |
+| Lock | Disable/Read-Write | 调试完成前不锁 |
+
+若PB0产生ADC/COMP Pinout冲突，处理方法与COMP1相同：保留ADC3_IN12，在USER CODE中补充COMP4输入选择，并实测ADC影响。
+
+### ~~12.5 COMP3母线过压~~ **【修改为】12.6 COMP3母线过压**
+
+进入 `Analog > COMP3 > Parameter Settings`：
+
+| 字段 | 设置值 | 说明 |
+| --- | --- | --- |
+| Plus Input | IO2 / PC1 | 与ADC1_IN7共用VBUS |
+| Minus Input | DAC3 Channel 1 | 母线过压阈值 |
+| Output Polarity | Non-inverted | VBUS采样电压超过阈值时输出有效 |
+| Hysteresis | 10 mV | 避免阈值附近抖动 |
+| Blanking Source | None | 母线过压不使用PWM消隐 |
+| Trigger Mode | Rising edge interrupt | COMP IRQ软件停机 |
+| Lock | Disable/Read-Write | 调试完成前不锁 |
+
+HRTIM Fault 3已经用于PB10数字输入，同一Fault Line不能同时作为PB10数字源和COMP3内部源。~~因此不能把FLT3改为Internal而牺牲手动急停。~~ **【修改为】** 因此COMP3保持IRQ软件关断，不能把FLT3改为Internal而丢失PB10既有的测试和未来扩展路由。
+
+### ~~12.6 COMP到HRTIM内部Fault~~ **【修改为】12.7 COMP到HRTIM内部Fault**
+
+【本次新增-建议】在CubeMX HRTIM `Fault Configuration`页面中：
+
+| Fault | Source | Polarity | Filter | Blanking | 作用Timer |
+| --- | --- | --- | --- | --- | --- |
+| Fault 1 | Internal | 按COMP1有效电平 | None | None | A/B |
+| Fault 4 | Internal | 按COMP4有效电平 | None | None | C/D/E |
+
+只有CubeMX 6.17在当前G474器件下明确提供相应内部源，并且生成代码出现以下内容时，才能继续验证：
+
+```c
+pFaultCfg.Source = HRTIM_FAULTSOURCE_INTERNAL;
+```
+
+还必须分别改变PA1/PB0模拟输入，确认CPU停在断点时Fault 1/4仍会把对应输出变为Inactive。若只进入COMP中断、HRTIM输出没有硬件变化，则该路径必须降级标记为“COMP IRQ软件关断”，不得宣称无CPU保护。
+
+Fault 1/4初次验证保持Filter None和Blanking None。只有示波器证明误触发固定发生在开关沿，才设计窄消隐窗口；消隐范围必须实测，不能直接复制Fault 3或其它工程的Blanking设置。
+
+### ~~12.7 COMP生成代码核对~~ **【修改为】12.8 COMP生成代码核对**
+
+应看到：
+
+- `HAL_COMP_Init()`分别配置COMP1、COMP4、COMP3；
+- COMP1正输入为`COMP_INPUT_PLUS_IO1`；
+- COMP4正输入为`COMP_INPUT_PLUS_IO1`；
+- COMP3正输入为`COMP_INPUT_PLUS_IO2`；
+- 三个COMP负输入分别连接正确DAC通道；
+- `COMP1_2_3_IRQHandler()`和`COMP4_5_6_IRQHandler()`调用HAL COMP IRQ处理；
+- 若启用内部Fault 1/4，A/B和C/D/E的`FaultEnable`掩码分别包含对应Fault；
+- Fault Level仍为Inactive，故障后不自动重启。
 
 ## 13. NVIC优先级
 
@@ -621,69 +933,73 @@ LSI误差较大，必须在实板上测量实际复位时间。
 | 中断 | 抢占优先级 | 子优先级 | 说明 |
 | --- | ---: | ---: | --- |
 | HRTIM1 Fault Global | 0 | 0 | 软件收尾；硬件已先关PWM |
-| ADC1_2 Global | 1 | 0 | 只处理ADC1/2 Overrun等错误 |
-| ADC3 Global | 1 | 0 | 只处理ADC3错误 |
-| ADC4 Global | 1 | 0 | 只处理ADC4错误 |
-| ADC5 Global | 1 | 0 | 只处理ADC5错误 |
+| **【本次新增】COMP1_2_3 Global** | 0 | 0 | COMP1/3 IRQ后备关断；启用COMP时添加 |
+| **【本次新增】COMP4_5_6 Global** | 0 | 0 | COMP4 IRQ后备关断；启用COMP时添加 |
+| ADC1_2 Global | 1 | 0 | ~~只处理ADC1/2 Overrun等错误~~ **【修改为】** 处理AWD1/2及ADC错误 |
+| ADC3 Global | 1 | 0 | ~~只处理ADC3错误~~ **【修改为】** 处理AWD1/2及ADC3错误 |
+| ADC4 Global | 1 | 0 | ~~只处理ADC4错误~~ **【修改为】** 处理AWD1/2及ADC4错误 |
+| ADC5 Global | 1 | 0 | ~~只处理ADC5错误~~ **【修改为】** 处理AWD1/2及ADC5错误 |
 | DMA1 Channel 2 / ADC2 | 1 | 0 | VAC序列发布 |
 | DMA2 Channel 1 / ADC3 | 1 | 0 | U相序列发布 |
 | DMA2 Channel 2 / ADC4 | 1 | 0 | V相序列发布 |
 | DMA2 Channel 3 / ADC5 | 1 | 0 | W相序列发布 |
 | DMA1 Channel 1 / ADC1 | 2 | 0 | PFC测量快照和控制入口 |
-| EXTI9_5 | 3 | 0 | PE5/PE6分区故障诊断 |
+| ~~EXTI9_5~~ | ~~3~~ | ~~0~~ | **【必须修改】** PE5/PE6恢复`Reset_State`后关闭该IRQ |
+| **【后续功能】EXTI0** | 不启用 | 不启用 | PD0当前为`Reset_State`；以后增加按键仍推荐1 ms轮询而非EXTI |
 | SysTick | 15 | 0 | HAL时基和低速任务标志 |
 
-`HAL_ADC_Start_DMA()`会使能ADC Overrun中断，即使ADC参数选择了`Data Overwritten`。因此必须在CubeMX中启用`ADC1_2_IRQn`、`ADC3_IRQn`、`ADC4_IRQn`和`ADC5_IRQn`，并确认对应IRQHandler调用`HAL_ADC_IRQHandler()`。这些ADC全局中断只用于进入`HAL_ADC_ErrorCallback()`处理Overrun等错误，不用于EOC控制；不要在ADC全局IRQ中再次运行控制算法。
+`HAL_ADC_Start_DMA()`会使能ADC Overrun中断，即使ADC参数选择了`Data Overwritten`。因此必须在CubeMX中启用`ADC1_2_IRQn`、`ADC3_IRQn`、`ADC4_IRQn`和`ADC5_IRQn`，并确认对应IRQHandler调用`HAL_ADC_IRQHandler()`。~~这些ADC全局中断只用于进入`HAL_ADC_ErrorCallback()`处理Overrun等错误，不用于EOC控制；~~ **【修改为】** 这些ADC全局中断同时处理AWD1/2越界和ADC错误，但仍不用于EOC控制；不要在ADC全局IRQ中再次运行控制算法。
 
-联合控制不能假定ADC1回调发生时ADC3~5必然已完成，也不需要等待它们。ADC1回调只在ADC2的VAC序列已更新时运行PFC控制；逆变控制只等待ADC3/4/5三路快照。跨模块故障、VBUS有效性和Gate Enable许可由慢速状态机协调。
+联合控制不能假定ADC1回调发生时ADC3~5必然已完成，也不需要等待它们。ADC1回调只在ADC2的VAC序列已更新时运行PFC控制；逆变控制只等待ADC3/4/5三路快照。跨模块故障、VBUS有效性和~~Gate Enable许可~~ **【修改为】HRTIM输出开放许可**由慢速状态机协调。
 
 ## 14. 生成代码后的启动顺序
 
 CubeMX只生成初始化函数，不会自动建立安全启动状态机。用户代码固定按以下顺序执行：
 
 1. `HAL_Init()`和`SystemClock_Config()`；
-2. `MX_GPIO_Init()`，确认PE0/PE1/PE2/PE3均为Low；
+2. ~~`MX_GPIO_Init()`后确认PE0/PE1/PE2/PE3均为Low；~~ **【修改为】** 核对PE0~PE3、PE5/PE6和PD0均未生成GPIO初始化或宏，随后确认全部HRTIM输出仍关闭；
 3. `MX_DMA_Init()`；
 4. `MX_HRTIM1_Init()`，保持所有输出关闭；
-5. `MX_ADC1_Init()`至`MX_ADC5_Init()`；
+5. `MX_ADC1_Init()`至`MX_ADC5_Init()`，确认AWD1/2已按第7节配置；P1+再调用DAC1/DAC3和COMP1/3/4初始化；
 6. `MX_USART2_UART_Init()`；
 7. 在功率输出关闭时执行`HAL_Delay(100)`和`OLED_Init()`；
 8. 依次校准ADC1~5；
 9. 清零DMA缓冲区、样本序列号、控制心跳和故障状态；
 10. 依次启动ADC2、ADC5、ADC4、ADC3，最后启动ADC1的循环DMA，使两个测量域的辅助ADC先进入等待触发状态；
 11. 检查五个`HAL_ADC_Start_DMA()`均返回`HAL_OK`并关闭HT中断；
-12. 确认PB10 Fault 3未激活；
+12. 确认PB10 Fault 3、所有ADC AWD以及已启用的COMP均未激活；
 13. 完成HRTIM DLL校准；
-14. 用同一掩码启动Master和A~E计数器，但保持十路输出和PE0/PE1关闭；
+14. ~~用同一掩码启动Master和A~E计数器，但保持十路输出关闭；PE0/PE1继续保持Low；~~ **【修改为】** 用同一掩码启动Master和A~E计数器，但保持十路输出关闭；不访问已恢复`Reset_State`的PE0/PE1；
 15. 连续检查Trigger 1/2和五路DMA更新；
-16. 最后调用`MX_IWDG_Init()`；
-17. 状态机允许时，先启动所需HRTIM输出，再拉高对应Gate Enable。
+16. 验证ADC看门狗阈值已经进入与当前启动状态匹配的窗口，P1+还需验证DAC/COMP稳定；
+17. 最后调用`MX_IWDG_Init()`；
+18. ~~状态机允许时只开放所需HRTIM输出，同时保持PE0/PE1为Low。~~ **【修改为】** 状态机满足采样、母线、Fault和软件许可条件时，只开放所需HRTIM输出；不执行任何PE0/PE1操作，PD0也不参与当前许可。
 
-P0-PFC只启动Master/A/B和ADC1/2，P0-INV只启动Master/C/D/E和ADC3~5。P1可以让Master和A~E计数器共同运行以维持采样时基，但功率输出必须按状态机分别开放：先完成预充和PFC母线建立，再允许C/D/E输出和PE1。P2未进入制动状态时始终不启动F。
+P0-PFC只启动Master/A/B和ADC1/2，P0-INV只启动Master/C/D/E和ADC3~5。P1可以让Master和A~E计数器共同运行以维持采样时基。~~功率输出必须先由PE2控制预充，再开放A/B和C/D/E。~~ **【修改为】** PE2/PE3当前不使用，固件不执行自动预充或自动放电。带功率前必须由板外受控电源、限流措施或经确认的独立硬件流程建立安全母线；满足条件后再依次开放A/B和C/D/E。P2未进入制动状态时始终不启动F。
 
 联合带功率顺序固定为：
 
 ```text
-安全GPIO和Fault自检
+ 安全GPIO和Fault自检
  -> 启动五路ADC DMA与HRTIM采样时基（PWM引脚仍关闭）
- -> 交流输入检测与预充
- -> 开放A/B和PE0，PFC建立52~55 V母线
+ -> ~~交流输入检测并由PE2执行自动预充~~ **【修改为】板外限流/人工流程建立安全母线；PE2不参与**
+ -> ~~开放A/B和PE0~~ **【修改为】开放A/B**，PFC建立52~55 V母线
  -> 母线稳定、PFC电流环正常、输入无故障
  -> 逆变参考从0软启动
- -> 开放C/D/E和PE1
+ -> ~~开放C/D/E和PE1~~ **【修改为】开放C/D/E**
  -> 60 Hz或30 Hz三相三线运行
 ```
 
-任何PFC、母线、逆变驱动或采样故障均应关闭A~E输出及PE0/PE1；Master是否继续计数用于故障记录可以由状态机决定，但不得因此重新开放功率输出。
+任何PFC、母线、逆变或采样故障均应~~关闭A~E输出并保持PE0/PE1为Low~~ **【修改为】禁止新的Compare更新并立即停止A~E输出**；Master是否继续计数用于故障记录可以由状态机决定，但不得因此重新开放功率输出。PE0~PE3、PE5/PE6和PD0均为`Reset_State`，故障路径不得访问这些引脚。
 
 任何失败统一执行：
 
 ```text
-PE0 = Low
-PE1 = Low
-关闭所有HRTIM输出
-复位PI/PR/QPR和调制命令
-锁存故障，等待人工确认
+禁止新的Compare更新
+-> 停止HRTIM A~E输出
+-> 锁存故障并停止正常控制
+-> 复位PI/PR/QPR和调制命令
+-> 停止正常IWDG刷新，禁止自动恢复
 ```
 
 ## 15. 生成代码核对表
@@ -697,15 +1013,20 @@ PE1 = Low
 | A~E HRTIM DMA Request | 各Timer均为`HRTIM_TIM_DMA_NONE` |
 | 500 ns死区 | A~E的`HAL_HRTIM_DeadTimeConfig()`，DIV1和85/85 |
 | 十路输出 | A1/A2至E1/E2的`HAL_HRTIM_WaveformOutputConfig()` |
-| Fault 3 | Digital Input、Low、None Filter以及A~E Fault Enable |
+| Fault 3 | Digital Input、Low、None Filter以及A~E Fault Enable；用途由~~驱动器汇总故障或手动急停~~ **【修改为】受控故障注入和未来故障源预留，当前无自动保护源** |
+| **【必须修改】PE0~PE3、PE5/PE6** | 重新生成后不应出现这些引脚的GPIO初始化、Label宏或EXTI配置 |
+| **【后续功能】PD0** | 当前不应生成PD0 GPIO、Pull、EXTI或Label配置 |
 | Trigger 1 | Master CMP2、Postscaler 0 |
 | Trigger 2 | Master CMP2、Postscaler 0 |
 | ADC1/3/4/5两Rank | 每个ADC各两次`HAL_ADC_ConfigChannel()` |
 | ADC2单Rank | 一次`HAL_ADC_ConfigChannel()` |
 | ADC1/2 Trigger 1 | `ADC_EXTERNALTRIG_HRTIM_TRG1`和Rising Edge |
 | ADC3/4/5 Trigger 2 | `ADC_EXTERNALTRIG_HRTIM_TRG2`和Rising Edge |
+| **【本次新增】ADC AWD1** | ADC1~5分别出现`HAL_ADC_AnalogWDGConfig()`，Rank 1频道正确、12位阈值正确 |
+| **【本次新增】ADC AWD2** | ADC1/3/4/5的Rank 2标记为AWD2；CubeMX/HAL仍填0~4095的12位码，HAL内部映射到8位有效门限 |
 | 五路DMA | 五个DMA句柄和五次`__HAL_LINKDMA()` |
-| ADC Overrun中断 | `ADC1_2_IRQHandler()`、`ADC3_IRQHandler()`、`ADC4_IRQHandler()`、`ADC5_IRQHandler()`均调用`HAL_ADC_IRQHandler()` |
+| ADC AWD/Overrun中断 | `ADC1_2_IRQHandler()`、`ADC3_IRQHandler()`、`ADC4_IRQHandler()`、`ADC5_IRQHandler()`均调用`HAL_ADC_IRQHandler()` |
+| **【本次新增-条件】COMP/DAC** | P1+才生成COMP1/3/4和DAC1/DAC3初始化；内部Fault 1/4必须看到`HRTIM_FAULTSOURCE_INTERNAL` |
 | 软件I2C | 只有PA15/PB7 GPIO，不生成`i2c.c` |
 | USART2阻塞通信 | 无USART2 DMA，无USART2 NVIC |
 | HSE CSS | `SystemClock_Config()`调用`HAL_RCC_EnableCSS()`，NMI用户代码进入安全关断 |
@@ -722,11 +1043,13 @@ PE1 = Low
 5. 核对A~E的Time Base、Compare、Output、ROM、Dead Time和Fault 3完全一致；
 6. 核对Trigger 1服务ADC1/2，Trigger 2服务ADC3/4/5，二者仍由Master CMP2产生；
 7. 核对ADC1~5的Rank、采样时间和五路循环DMA映射未变化；
-8. 核对DMA和ADC错误中断优先级与第13节一致；
-9. 核对PE0~PE3初始Low、PE5/PE6下降沿EXTI以及PB10硬件Fault路径；
-10. 检查USART2、软件I2C、SWD和HSE未被挤占；
-11. 检查COMP/DAC和HRTIM F仍关闭；
-12. 生成代码并按第15节逐项比对，尤其确认CSS、HRTIM Fault、DMA链接和用户安全代码未被覆盖。
+8. **【本次修改-必须】** 在ADC1~5页面增加AWD1，在ADC1/3/4/5页面增加AWD2，并按第7节设置Channel、阈值和ADC全局中断；
+9. 核对DMA和ADC AWD/错误中断优先级与第13节一致；
+10. ~~核对PE0~PE3初始Low、PE5/PE6下降沿EXTI以及PB10硬件Fault路径；~~ **【修改为】** 将PE0~PE3、PE5/PE6和PD0全部设为`Reset_State`并删除旧Label；关闭`EXTI9_5_IRQn`和PD0相关EXTI；保持PB10数字Fault 3；
+11. 检查USART2、软件I2C、SWD和HSE未被挤占；
+12. P1首次修改先保持COMP/DAC关闭；完成AWD验证后，按第12节逐个增加COMP1/4/3和DAC阈值；
+13. HRTIM F仍保持关闭；
+14. 生成代码并按第15节逐项比对，尤其确认CSS、HRTIM Fault、AWD、DMA链接和用户安全代码未被覆盖。
 
 ## 17. 验收清单
 
@@ -744,15 +1067,19 @@ PE1 = Low
 - [ ] Trigger 2来源为Master CMP2并服务ADC3/4/5。
 - [ ] ADC Rank与第7.2节完全一致。
 - [ ] 五路DMA均为Circular、Half Word、Memory Increment Enable。
-- [ ] ADC1_2、ADC3、ADC4、ADC5全局中断已启用，仅用于ADC错误处理。
+- [ ] ADC1_2、ADC3、ADC4、ADC5全局中断已启用，~~仅用于ADC错误处理~~ **【修改为】用于AWD1/2和ADC错误处理**。
+- [ ] **【本次新增】** ADC1/3/4/5的Rank 1电流使用AWD1的12位上下限，ADC2 AWD1使用VAC宽窗口。
+- [ ] **【本次新增】** ADC1/3/4/5的Rank 2电压使用AWD2；阈值字段填0~4095的12位标定码，并接受硬件只有8位有效精度。
 - [ ] DMA1_CH2/ADC2优先级1、DMA1_CH1/ADC1优先级2，PFC控制只从ADC1完整DMA路径进入。
 - [ ] ADC3/4/5使用独立序列形成逆变快照，逆变控制每个PWM周期只运行一次。
 - [ ] PB10为数字Fault 3、低有效、Filter None、Blanking None。
-- [ ] HSE CSS已启用，NMI用户代码会关闭PWM并拉低PE0/PE1。
-- [ ] PE0/PE1/PE2/PE3初始Low。
+- [ ] HSE CSS已启用，NMI用户代码会~~关闭PWM并拉低PE0/PE1~~ **【修改为】禁止Compare更新、停止HRTIM A~E输出并锁存故障，不访问PE0/PE1**。
+- [ ] ~~PE0/PE1/PE2/PE3配置为GPIO输出且初始Low。~~ **【修改为】PE0~PE3均为`Reset_State`，`main.h`中没有对应控制宏**。
+- [ ] ~~PE5/PE6仅取消EXTI但仍可保留GPIO输入。~~ **【修改为】PE5/PE6均为`Reset_State`，`EXTI9_5_IRQn`关闭**。
+- [ ] **【后续功能】** PD0保持`Reset_State`，无GPIO、Pull、Label、EXTI和NVIC配置。
 - [ ] USART2无DMA和全局中断。
 - [ ] 没有启用硬件I2C外设。
-- [ ] COMP和DAC保持关闭。
+- [ ] ~~COMP和DAC保持关闭。~~ **【修改为】** P1基线先关闭；P1+只启用已逐个验证的COMP1/4/3及DAC1/DAC3通道。
 
 ### 17.2 无功率上板
 
@@ -765,8 +1092,10 @@ PE1 = Low
 7. 使用调试GPIO或示波器确认采样点远离实际开关沿；
 8. 拉低PB10，确认不依赖CPU即可关闭A~E全部输出；
 9. 保持PB10恢复，确认软件不会自动重新启动PWM；
-10. 确认复位、下载、HardFault和IWDG复位后PE0/PE1仍为Low；
-11. 确认OLED和VOFA工作时不会改变10 kHz控制节拍。
+10. **【本次新增】** 逐个改变九个ADC通道，确认只有分配到该Channel的AWD置位并关闭A~E；
+11. **【本次新增-条件】** P1+逐个验证COMP1、COMP4、COMP3；只有CPU暂停时仍由Fault 1/4关闭PWM，才能登记为内部硬件Fault；
+12. ~~确认复位、下载、HardFault和IWDG复位后HRTIM输出关闭，PE0/PE1仍为Low；~~ **【修改为】** 确认复位、下载、HardFault和IWDG复位后HRTIM输出保持关闭，PE0~PE3、PE5/PE6和PD0没有被软件配置或访问；
+13. 确认OLED和VOFA工作时不会改变10 kHz控制节拍。
 
 ### 17.3 低压联合验证
 
@@ -777,8 +1106,9 @@ PE1 = Low
 5. 验证`IU+IV+IW`和`VUV+VVW+VWU`在传感器误差允许范围内接近0；
 6. 接三相三线阻性负载，先验证线电压开环，再验证线电压闭环；
 7. 分别停止任一路DMA，确认输出关断并锁存故障；
-8. 注入PFC或逆变驱动故障，确认两部分同时关断；
-9. 通过全部低压Fault测试后才提高母线电压和负载。
+8. ~~注入PFC或逆变驱动故障，确认两部分同时关断；~~ **【修改为】** 分别注入PB10、ADC过流窗口、VBUS过压、COMP阈值（已启用时）和DMA停止，确认A~E同时关断；
+9. 验证VAC丢失、输出RMS欠压和三相不平衡由整周期软件判断，而不是误用瞬时AWD Low Threshold；
+10. 通过全部低压Fault测试后才提高母线电压和负载。
 
 ### 17.4 赛题要求1~5验收
 
@@ -803,6 +1133,8 @@ PE1 = Low
 | PA15/PB7 | 软件I2C OLED | HRTIM Fault/EEV和其他TIM复用 |
 | PA11 | HRTIM1_CHB2 | USB_DM，因此本方案不使用原生USB |
 | PF0/PF1 | HSE | ADC、COMP、SPI/I2C复用 |
+
+【本次新增-COMP共脚注意】PA1、PB0和PC1分别同时承担ADC采样与COMP模拟输入。CubeMX若提示Pinout冲突，必须优先保留ADC分配，并按第12节在USER CODE补充COMP输入选择；不得为了消除黄色提示而把采样脚改成数字模式。
 
 每次增加可选功能或更换引脚后，都必须重新运行CubeMX Pinout冲突检查，不能只依据本文表格判断。
 
@@ -847,7 +1179,7 @@ ADC1 DMA完成 -> 核对VAC -> PFC电流环（10 kHz）
 ADC3/4/5 DMA完成 -> 发布三相一致性快照
                  -> 三相电压/电流控制 + CBSVPWM（10 kHz，每帧一次）
 
-1 ms状态机 -> 交换VBUS、Fault和Gate Enable许可，不运行第二次快速控制
+1 ms状态机 -> 交换VBUS、Fault和~~Gate Enable许可~~ **【修改为】HRTIM输出开放许可**，不运行第二次快速控制
 ```
 
 两个10 kHz控制路径可能在同一个100 us周期内先后进入中断，必须用DWT周期计数器或调试GPIO测量联合最坏执行时间。初步要求每个快速路径单独小于`30 us`，两者加上DMA/HAL开销后仍应保留明确余量；OLED、VOFA、浮点格式化和任何阻塞HAL调用只能留在主循环。
@@ -861,7 +1193,7 @@ ADC3/4/5 DMA完成 -> 发布三相一致性快照
 - 真正需要新增或确认的是板级线电压差分/隔离调理、52~55 V母线能力、LC滤波器和校准参数；这些不能由CubeMX代替。
 - 10 kHz为当前统一基线，只有THD、效率或动态性能实测证明需要时才整体迁移到20 kHz。
 - 500 ns死区和24.5 cycles采样时间只是低压起点。
-- COMP/DAC是后续可选增强，不是首版启动依赖。
-- 没有可靠DESAT/OCP时，禁止高压带功率运行。
+- ~~COMP/DAC是后续可选增强，不是首版启动依赖。~~ **【修改为】** ADC模拟看门狗是最终基线；COMP1/4/3和DAC是完成AWD验证后的增强层，不得一次性启用未经验证的全部COMP。
+- ~~没有可靠DESAT/OCP时，禁止高压带功率运行。~~ **【修改为-硬件边界】** 现有驱动板没有DESAT/OCP或可控DISABLE。即使AWD和COMP全部通过测试，也只能在限流电源、熔断器和可直接切断输入电源的板外操作条件下逐级升压，不能宣称已经具备独立短路保护；该板外断电措施不等同于PB10自动保护。
 - 任何无法确认ADC同步、DMA更新、Fault状态或控制心跳的情况，都按故障处理。
-- 故障恢复后禁止自动重启，必须先保持PWM和PE0/PE1关闭，再由人工确认。
+- 故障恢复后禁止自动重启，必须先保持~~PWM和PE0/PE1关闭~~ **【修改为】HRTIM A~E输出关闭，PE0~PE3、PE5/PE6和PD0保持`Reset_State`**，再通过独立的软件调试许可重新执行完整自检；当前不使用PD0清故障或重启。

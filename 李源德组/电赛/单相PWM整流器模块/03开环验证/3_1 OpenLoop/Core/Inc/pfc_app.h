@@ -1,45 +1,70 @@
 #ifndef PFC_APP_H
 #define PFC_APP_H
 
+/* PFC状态机公共接口：连接1 ms主循环、10 kHz控制回调和HRTIM功率许可。 */
+
 #include <stdint.h>
 #include "pfc_measure.h"
 #include "pfc_params.h"
 
-/* 状态编号同时发送到OLED/VOFA；修改顺序时同步更新上位机名称。 */
+/** @brief 单相PWM整流器从安全采样到开环运行的应用状态。 */
 typedef enum
 {
-    PFC_SAFE = 0,          /* 复位后的强制安全等待，PE0和PWM均关闭。 */
-    PFC_CALIBRATION,       /* 输出原始ADC；参数未确认时停留在此状态。 */
-    PFC_ADC_CHECK,         /* HRTIM只产生ADC触发，验证DMA连续性。 */
-    PFC_PASSIVE_PRECHARGE, /* 等待体二极管预充和VAC锁定。 */
-    PFC_READY,             /* 启动条件成立，等待PD0短按。 */
-    PFC_OPEN_LOOP_RAMP,    /* Gate开启，电流指令按斜坡增加。 */
-    PFC_OPEN_LOOP_RUN,     /* 开环指令达到目标或母线达到目标。 */
-    PFC_STOP,              /* 人工停机后的100 ms过渡。 */
-    PFC_FAULT_LATCH        /* 故障锁存，只允许复位/重新上电恢复。 */
+    PFC_SAFE = 0,          /* 复位后的强制安全等待，PWM输出关闭。 */
+    PFC_CALIBRATION,       /* 参数未确认时的原始ADC观察状态，禁止带功率。 */
+    PFC_ADC_CHECK,         /* 标定有效后检查同步采样和工程量有效性。 */
+    PFC_PASSIVE_PRECHARGE, /* 等待VAC同步和母线被动建立并连续稳定。 */
+    PFC_READY,             /* 启动条件满足，等待PD0完成一次有效短按。 */
+    PFC_OPEN_LOOP_RAMP,    /* PWM已开放，电流峰值指令按设定斜率增加。 */
+    PFC_OPEN_LOOP_RUN,     /* 母线达到开环目标附近，继续开环运行。 */
+    PFC_STOP,              /* 人工停机后的短暂等待，采样计数器仍运行。 */
+    PFC_FAULT_LATCH        /* 故障锁存，软件不允许自动恢复。 */
 } PFC_State;
 
 /**
- * @brief  初始化状态机并强制功率输出进入安全态。
- * @param  params 常驻参数地址。
- * @param  iwdg_reset_seen 非0表示检测到IWDG复位原因。
- * @note   主程序初始化阶段调用，不启动PWM输出或Gate Enable。
+ * @brief  初始化PFC状态机、PD0消抖和开环调制器。
+ * @param  params 常驻只读参数地址。
+ * @param  iwdg_reset_seen 非0表示本次启动来自IWDG复位。
+ * @note   初始化会强制关闭HRTIM输出，不会开放实际功率驱动。
  */
 void PFC_AppInit(const PFC_Params *params, uint8_t iwdg_reset_seen);
 
-/** @brief ADC1完整DMA回调中的唯一10 kHz控制入口，不允许阻塞。 */
+/**
+ * @brief  ADC1完整DMA回调中的唯一10 kHz控制入口。
+ * @note   在DMA ISR中调用，不允许OLED、USART、HAL_Delay()或其他阻塞操作。
+ */
 void PFC_AppFastStep(void);
 
-/** @brief 主循环每1 ms调用一次，处理PD0和状态迁移。 */
+/**
+ * @brief  处理PD0消抖、启动许可和状态迁移。
+ * @note   主循环每1 ms调用一次；PD0只提供运行命令，不承担硬件急停职责。
+ */
 void PFC_AppTick1ms(void);
 
-/** @brief 锁存故障并关断功率输出，可由ISR或主循环调用。 */
+/**
+ * @brief  锁存故障并关闭HRTIM输出。
+ * @param  fault_bits 一个或多个PFC_FaultMask位。
+ * @note   可由ISR或主循环调用；故障后只能通过系统复位恢复。
+ */
 void PFC_AppTrip(uint32_t fault_bits);
 
-/** @brief 返回当前PFC_State，供显示和遥测只读。 */
+/**
+ * @brief  返回当前状态，供OLED、VOFA和调试器只读。
+ * @retval 当前PFC_State。
+ */
 PFC_State PFC_AppGetState(void);
 
-/** @brief 每100 ms执行一次安全监督，返回非0时才允许刷新IWDG。 */
+/**
+ * @brief  检查当前活动参数是否完成板级标定并通过范围校验。
+ * @retval 1表示参数有效，0表示必须保持标定安全模式。
+ */
+uint8_t PFC_AppCalibrationValid(void);
+
+/**
+ * @brief  检查ADC、控制心跳、状态机和HRTIM软件状态是否一致。
+ * @retval 1表示本监督周期允许刷新IWDG，0表示不得刷新。
+ * @note   由主循环每100 ms调用一次，每个监督周期只能调用一次。
+ */
 uint8_t PFC_AppWatchdogHealthy(void);
 
 #endif

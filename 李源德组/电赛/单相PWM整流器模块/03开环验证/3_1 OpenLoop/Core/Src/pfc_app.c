@@ -4,43 +4,62 @@
 #include "main.h"
 
 /*
- * 本模块负责人工启停、状态迁移、启动条件和Gate Enable顺序，不负责ADC换算和调制计算。
- * 数据流如下：
- * 1 ms主循环 -> PD0消抖/状态机 -> PWM输出与PE0启停
- * ADC1 DMA ISR -> PFC_AppFastStep() -> VAC同步与开环Compare更新
- * 驱动器nFAULT -> PB10/HRTIM Fault 3先硬件关断 -> ISR随后锁存软件故障
+ * 本模块负责PD0人工启停、状态迁移和功率输出许可，不负责ADC换算或PWM调制计算。
+ * 数据流：1 ms主循环 -> 按键消抖/状态机 -> HRTIM输出启停；
+ *           ADC1完整DMA ISR -> PFC_AppFastStep() -> VAC同步和Compare更新。
  *
- * “HRTIM计数器运行”“四路MCU PWM输出开放”“PE0 Gate Enable拉高”是三个独立状态。
- * PFC_ADC_CHECK阶段只运行计数器产生ADC触发；只有PFC_OPEN_LOOP_RAMP/RUN允许PE0为高。
+ * 当前驱动板没有MCU可控Gate Enable。Master/A/B计数器只建立ADC触发时基，
+ * HAL_HRTIM_WaveformOutputStart()开放PA8~PA11后即可能驱动功率器件，二者必须区分。
  */
-#define PFC_KEY_GPIO_PORT              PFC_START_KEY_GPIO_Port
-#define PFC_KEY_GPIO_PIN               PFC_START_KEY_Pin
-#define PFC_KEY_DEBOUNCE_MS            30U    /* 原始电平连续稳定30 ms才承认改变。 */
-#define PFC_KEY_SHORT_MIN_MS           50U    /* 释放时按下时间位于50~1000 ms才生成一次短按事件。 */
-#define PFC_KEY_SHORT_MAX_MS           1000U
-#define PFC_ADC_CHECK_TIME_MS           200U  /* DMA和测量连续有效至少200 ms。 */
-#define PFC_PRECHARGE_STABLE_MS         500U  /* VAC/VBUS启动条件连续成立500 ms。 */
-#define PFC_VAC_RMS_TOLERANCE           0.10f /* 当前参数档额定VAC RMS的正负10%。 */
-#define PFC_GRID_FREQUENCY_TOLERANCE    3.0f  /* Hz */
+/* PD0低有效按键映射；端口和引脚宏来自CubeMX生成的main.h。 */
+#define PFC_KEY_GPIO_PORT               PFC_START_KEY_GPIO_Port
+#define PFC_KEY_GPIO_PIN                PFC_START_KEY_Pin
 
-/* 主循环与ADC ISR共享app_state；volatile保证每次读取内存，但状态迁移仍由接口约束串行化。 */
-static const PFC_Params *app_params = 0;       /* 初始化后只读，参数对象必须常驻。 */
+/* 按键时间均以1 ms状态机调用为计时基准。 */
+#define PFC_KEY_DEBOUNCE_MS             30U   /* 按下或释放连续稳定时间，单位ms。 */
+#define PFC_KEY_SHORT_MIN_MS            50U   /* 有效短按的最短稳定按下时间，单位ms。 */
+#define PFC_KEY_SHORT_MAX_MS            1000U /* 有效短按的最长稳定按下时间，单位ms。 */
+
+/* 状态迁移等待时间，单位ms；只由PFC_AppTick1ms()使用。 */
+#define PFC_ADC_CHECK_TIME_MS           200U
+#define PFC_PRECHARGE_STABLE_MS         500U
+#define PFC_TARGET_BUILD_TIMEOUT_MS     3000U
+
+/* VAC有效值相对额定值的允许偏差，0.10表示正负10%。 */
+#define PFC_VAC_RMS_TOLERANCE           0.10f
+
+static const PFC_Params *app_params = 0; /* 初始化后只读，参数对象必须常驻。 */
+/* 当前PFC状态：主循环状态机写，ADC ISR故障入口也可能改为FAULT_LATCH。 */
 static volatile PFC_State app_state = PFC_SAFE;
 
-/* 下列状态计数均只由1 ms主循环更新。 */
+/* 状态驻留时间，单位ms；PFC_AppTick1ms()每次加1，状态迁移时清零。 */
 static uint32_t app_state_time_ms = 0U;
+/* 被动预充条件连续成立时间，单位ms；只在PASSIVE_PRECHARGE状态累计。 */
 static uint32_t app_precharge_stable_ms = 0U;
+
+/* 上一次100 ms IWDG健康检查读取的序列/心跳，由主循环监督函数独占更新。 */
 static uint32_t app_last_adc1_sequence = 0U;
 static uint32_t app_last_adc2_sequence = 0U;
+static uint32_t app_last_fast_heartbeat = 0U;
+
+/* 复位来源锁存值：1表示本次上电入口检测到IWDG复位，仅初始化时写。 */
 static uint8_t app_iwdg_reset_seen = 0U;
 
-/* PD0消抖状态只由PFC_AppTick1ms()读写。1表示按键按下，即引脚为低电平。 */
-static uint8_t key_raw_last = 0U;
-static uint8_t key_stable = 0U;
-static uint16_t key_debounce_ms = 0U;
-static uint16_t key_pressed_ms = 0U;
+/* PD0消抖状态均由1 ms主循环写；1表示按下，0表示释放。 */
+static uint8_t key_raw_last = 0U;        /* 最近一次GPIO原始采样。 */
+static uint8_t key_stable = 0U;          /* 已通过30 ms消抖的稳定状态。 */
+static uint8_t key_startup_unlocked = 0U;/* 上电后已确认连续释放30 ms。 */
+static uint8_t key_ready_armed = 0U;     /* 进入READY后已确认按键处于释放态。 */
+static uint16_t key_release_ms = 0U;     /* 上电解锁前连续释放时间，单位ms。 */
+static uint16_t key_debounce_ms = 0U;    /* 当前原始状态连续保持时间，单位ms。 */
+static uint16_t key_pressed_ms = 0U;     /* 消抖后稳定按下时间，单位ms，饱和到65535。 */
 
-/* 检查被动预充和人工启动前必须持续成立的输入条件。 */
+/**
+ * @brief  判断标定、测量、VAC同步和被动预充条件是否同时成立。
+ * @param  measurement 由测量模块发布的一致性快照地址。
+ * @retval 1表示允许进入或保持READY，0表示至少一项启动条件不满足。
+ * @note   只读取参数和快照，不操作HRTIM输出，也不锁存故障。
+ */
 static uint8_t PFC_AppInputReady(const PFC_Measurement *measurement)
 {
     float vac_min;
@@ -48,15 +67,18 @@ static uint8_t PFC_AppInputReady(const PFC_Measurement *measurement)
     float frequency_min;
     float frequency_max;
 
-    if ((measurement == 0) || (app_params == 0))
+    /* 上下限均由活动参数档计算，电压单位V RMS，频率单位Hz。 */
+
+    if ((measurement == 0) || (app_params == 0) ||
+        (PFC_Params_IsValid(app_params) == 0U))
     {
         return 0U;
     }
 
     vac_min = app_params->vac_nominal_rms * (1.0f - PFC_VAC_RMS_TOLERANCE);
     vac_max = app_params->vac_nominal_rms * (1.0f + PFC_VAC_RMS_TOLERANCE);
-    frequency_min = app_params->grid_frequency_hz - PFC_GRID_FREQUENCY_TOLERANCE;
-    frequency_max = app_params->grid_frequency_hz + PFC_GRID_FREQUENCY_TOLERANCE;
+    frequency_min = app_params->grid_frequency_hz - app_params->grid_frequency_tolerance;
+    frequency_max = app_params->grid_frequency_hz + app_params->grid_frequency_tolerance;
 
     return (uint8_t)((measurement->valid != 0U) &&
                      (measurement->vac_locked != 0U) &&
@@ -67,14 +89,41 @@ static uint8_t PFC_AppInputReady(const PFC_Measurement *measurement)
                      (measurement->vbus >= app_params->vbus_start_min));
 }
 
-/*
- * 低有效按键在释放沿生成一次短按事件，避免按住期间每1 ms重复启停。
- * 超过1 s的长按首版不执行任何动作；故障状态也不会借按键自动清除。
+/**
+ * @brief 读取低有效PD0并在释放沿生成一次短按事件。
+ * @retval 1表示本次1 ms调用确认了一次50~1000 ms短按释放事件，否则返回0。
+ * @note  上电后必须先连续释放30 ms才解锁；按住按键上电再释放不会产生启动事件。
  */
 static uint8_t PFC_AppReadShortPress(void)
 {
-    uint8_t raw_pressed = (HAL_GPIO_ReadPin(PFC_KEY_GPIO_PORT, PFC_KEY_GPIO_PIN) == GPIO_PIN_RESET) ? 1U : 0U;
+    /* raw_pressed是本次GPIO采样；short_press只在有效释放沿保持一个1 ms调用周期。 */
+    uint8_t raw_pressed =
+        (HAL_GPIO_ReadPin(PFC_KEY_GPIO_PORT, PFC_KEY_GPIO_PIN) == GPIO_PIN_RESET) ? 1U : 0U;
     uint8_t short_press = 0U;
+
+    if (key_startup_unlocked == 0U)
+    {
+        if (raw_pressed == 0U)
+        {
+            if (key_release_ms < PFC_KEY_DEBOUNCE_MS)
+            {
+                key_release_ms++;
+            }
+            if (key_release_ms >= PFC_KEY_DEBOUNCE_MS)
+            {
+                key_startup_unlocked = 1U;
+                key_raw_last = 0U;
+                key_stable = 0U;
+                key_debounce_ms = 0U;
+                key_pressed_ms = 0U;
+            }
+        }
+        else
+        {
+            key_release_ms = 0U;
+        }
+        return 0U;
+    }
 
     if (raw_pressed != key_raw_last)
     {
@@ -86,15 +135,19 @@ static uint8_t PFC_AppReadShortPress(void)
         key_debounce_ms++;
         if (key_debounce_ms == PFC_KEY_DEBOUNCE_MS)
         {
-            if ((key_stable != 0U) && (raw_pressed == 0U) &&
-                (key_pressed_ms >= PFC_KEY_SHORT_MIN_MS) &&
-                (key_pressed_ms <= PFC_KEY_SHORT_MAX_MS))
-            {
-                short_press = 1U;
-            }
+            uint8_t old_stable = key_stable;
             key_stable = raw_pressed;
-            if (key_stable == 0U)
+            if (key_stable != 0U)
             {
+                key_pressed_ms = 0U;
+            }
+            else if (old_stable != 0U)
+            {
+                if ((key_pressed_ms >= PFC_KEY_SHORT_MIN_MS) &&
+                    (key_pressed_ms <= PFC_KEY_SHORT_MAX_MS))
+                {
+                    short_press = 1U;
+                }
                 key_pressed_ms = 0U;
             }
         }
@@ -104,49 +157,59 @@ static uint8_t PFC_AppReadShortPress(void)
     {
         key_pressed_ms++;
     }
-
     return short_press;
 }
 
-/* 人工停机和软件故障都先拉低PE0，再关闭四路PWM；HRTIM计数器继续供ADC采样。 */
+/**
+ * @brief  进入READY并要求在READY之后重新完成一次按下-释放周期。
+ * @note   仅由1 ms状态机调用，不开放HRTIM输出。
+ */
+static void PFC_AppEnterReady(void)
+{
+    app_state = PFC_READY;
+    app_state_time_ms = 0U;
+    key_ready_armed = 0U;
+}
+
+/**
+ * @brief  人工停机并把开环调制状态恢复到中性起点。
+ * @note   先关闭四路HRTIM输出，再复位SPWM；Master/A/B计数器继续为ADC提供触发。
+ */
 static void PFC_AppStopPower(void)
 {
     PFC_HRTIM_StopPower();
     SPWM_Reset();
 }
 
-/*
- * 启动顺序固定为：复核输入 -> 预写首个Compare -> 开放MCU PWM -> 拉高PE0。
- * PB10为低有效HRTIM Fault 3，PE5为PFC驱动器诊断输入；任一路为低都拒绝启动。
+/**
+ * @brief  复核许可条件，先写中性Compare，再开放四路HRTIM输出。
+ * @param  measurement 当前1 ms状态机读取的一致性测量快照。
+ * @note   仅在READY短按事件后调用；失败时锁存故障，不进行自动重试。
  */
 static void PFC_AppStartPower(const PFC_Measurement *measurement)
 {
-    if ((PFC_Params_IsValid(app_params) == 0U) ||
-        (PFC_AppInputReady(measurement) == 0U) ||
+    if ((PFC_AppInputReady(measurement) == 0U) ||
         (SPWM_IsSynchronized() == 0U) ||
-        (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_10) == GPIO_PIN_RESET) ||
-        (HAL_GPIO_ReadPin(PFC_NFAULT_DIAG_GPIO_Port, PFC_NFAULT_DIAG_Pin) == GPIO_PIN_RESET))
+        (PFC_Measure_GetFault() != PFC_FAULT_NONE))
     {
         return;
     }
 
-    SPWM_OpenLoopRampStep();
-    if ((SPWM_IsHealthy() == 0U) || (PFC_HRTIM_StartOutputs() != HAL_OK))
+    if ((SPWM_ForceNeutral() != HAL_OK) ||
+        (PFC_HRTIM_StartOutputs() != HAL_OK))
     {
         PFC_AppTrip(PFC_FAULT_HRTIM | PFC_FAULT_MODULATION);
         return;
     }
-
-    HAL_GPIO_WritePin(PFC_GATE_EN_GPIO_Port, PFC_GATE_EN_Pin, GPIO_PIN_SET);
     app_state = PFC_OPEN_LOOP_RAMP;
     app_state_time_ms = 0U;
 }
 
 /**
- * @brief  初始化单相PFC状态机、按键消抖和开环调制器。
- * @param  params 常驻只读参数地址，不能在运行期间释放或修改。
- * @param  iwdg_reset_seen 非0表示本次启动来自IWDG复位，SAFE状态延长到1 s。
- * @note   在HRTIM采样计数器启动后调用；函数会强制关闭PE0和PWM，不会启动功率级。
+ * @brief  初始化PFC状态、PD0消抖、IWDG复位记录和SPWM模块。
+ * @param  params 常驻只读参数档地址，初始化后必须始终有效。
+ * @param  iwdg_reset_seen 1表示本次启动来自IWDG复位，0表示其他复位来源。
+ * @note   在ADC/DMA启动前由main调用；会关闭HRTIM输出并写入中性Compare。
  */
 void PFC_AppInit(const PFC_Params *params, uint8_t iwdg_reset_seen)
 {
@@ -157,17 +220,24 @@ void PFC_AppInit(const PFC_Params *params, uint8_t iwdg_reset_seen)
     app_precharge_stable_ms = 0U;
     app_last_adc1_sequence = 0U;
     app_last_adc2_sequence = 0U;
+    app_last_fast_heartbeat = 0U;
     key_raw_last = 0U;
     key_stable = 0U;
+    key_startup_unlocked = 0U;
+    key_ready_armed = 0U;
+    key_release_ms = 0U;
     key_debounce_ms = 0U;
     key_pressed_ms = 0U;
     PFC_HRTIM_StopPower();
-    SPWM_Init(params);
+    if (SPWM_Init(params) != HAL_OK)
+    {
+        PFC_AppTrip(PFC_FAULT_PARAM | PFC_FAULT_MODULATION);
+    }
 }
 
 /**
- * @brief  执行一次10 kHz同步和开环调制更新。
- * @note   只能从ADC1完整DMA回调调用；不阻塞、不访问OLED/USART，仅在RAMP/RUN写Compare。
+ * @brief  使用最新一致性测量完成一次VAC同步和必要的开环Compare更新。
+ * @note   只由ADC1完整DMA回调以10 kHz调用；禁止阻塞、OLED、USART和HAL_Delay()。
  */
 void PFC_AppFastStep(void)
 {
@@ -178,12 +248,15 @@ void PFC_AppFastStep(void)
     {
         return;
     }
+    if (SPWM_SyncUpdate(&measurement) != HAL_OK)
+    {
+        PFC_AppTrip(PFC_FAULT_MODULATION);
+        return;
+    }
 
-    SPWM_SyncUpdate(&measurement);
     if ((app_state == PFC_OPEN_LOOP_RAMP) || (app_state == PFC_OPEN_LOOP_RUN))
     {
-        SPWM_OpenLoopRampStep();
-        if (SPWM_IsHealthy() == 0U)
+        if (SPWM_OpenLoopRampStep() != HAL_OK)
         {
             PFC_AppTrip(PFC_FAULT_MODULATION);
         }
@@ -191,12 +264,13 @@ void PFC_AppFastStep(void)
 }
 
 /**
- * @brief  执行1 ms按键、启动条件和状态迁移。
- * @note   仅由主循环的1 ms调度调用；FAULT_LATCH不接受按键清故障。
+ * @brief  执行PD0消抖、启动许可检查和PFC状态迁移。
+ * @note   由主循环按1 ms节拍调用；允许操作HRTIM启停，但不执行10 kHz调制计算。
  */
 void PFC_AppTick1ms(void)
 {
     PFC_Measurement measurement;
+    /* 快照在本次状态判断期间保持不变；short_press仅对本次调用有效。 */
     uint8_t short_press = PFC_AppReadShortPress();
 
     PFC_Measure_GetSnapshot(&measurement);
@@ -204,8 +278,11 @@ void PFC_AppTick1ms(void)
 
     if (measurement.fault_bits != PFC_FAULT_NONE)
     {
+        if (app_state != PFC_FAULT_LATCH)
+        {
+            PFC_AppStopPower();
+        }
         app_state = PFC_FAULT_LATCH;
-        PFC_AppStopPower();
         return;
     }
 
@@ -220,7 +297,8 @@ void PFC_AppTick1ms(void)
         break;
 
     case PFC_CALIBRATION:
-        if ((PFC_Params_IsValid(app_params) != 0U) && (measurement.offset_ready != 0U))
+        if ((PFC_Params_IsValid(app_params) != 0U) &&
+            (measurement.offset_ready != 0U))
         {
             app_state = PFC_ADC_CHECK;
             app_state_time_ms = 0U;
@@ -228,7 +306,9 @@ void PFC_AppTick1ms(void)
         break;
 
     case PFC_ADC_CHECK:
-        if ((measurement.valid != 0U) && (app_state_time_ms >= PFC_ADC_CHECK_TIME_MS))
+        if ((measurement.valid != 0U) &&
+            (measurement.raw_valid != 0U) &&
+            (app_state_time_ms >= PFC_ADC_CHECK_TIME_MS))
         {
             app_state = PFC_PASSIVE_PRECHARGE;
             app_state_time_ms = 0U;
@@ -240,8 +320,7 @@ void PFC_AppTick1ms(void)
         {
             if (++app_precharge_stable_ms >= PFC_PRECHARGE_STABLE_MS)
             {
-                app_state = PFC_READY;
-                app_state_time_ms = 0U;
+                PFC_AppEnterReady();
             }
         }
         else
@@ -256,6 +335,15 @@ void PFC_AppTick1ms(void)
             app_state = PFC_PASSIVE_PRECHARGE;
             app_precharge_stable_ms = 0U;
             app_state_time_ms = 0U;
+            key_ready_armed = 0U;
+        }
+        else if (key_ready_armed == 0U)
+        {
+            /* 若进入READY时按键仍被按住，必须先释放，随后重新短按才允许启动。 */
+            if (key_stable == 0U)
+            {
+                key_ready_armed = 1U;
+            }
         }
         else if (short_press != 0U)
         {
@@ -264,49 +352,61 @@ void PFC_AppTick1ms(void)
         break;
 
     case PFC_OPEN_LOOP_RAMP:
-        if ((short_press != 0U) || (measurement.vac_locked == 0U))
+        if (short_press != 0U)
         {
             PFC_AppStopPower();
-            app_state = (short_press != 0U) ? PFC_STOP : PFC_FAULT_LATCH;
-            if (short_press == 0U)
-            {
-                PFC_Measure_Trip(PFC_FAULT_VAC_LOST);
-            }
+            app_state = PFC_STOP;
             app_state_time_ms = 0U;
         }
-        else if ((measurement.vbus >= app_params->vbus_target) ||
-                 (SPWM_GetCurrentCommand() >= app_params->current_command_max))
+        else if ((measurement.vac_locked == 0U) ||
+                 (measurement.vbus < app_params->vbus_run_min))
+        {
+            PFC_AppTrip(PFC_FAULT_VAC_LOST);
+        }
+        else if (measurement.vbus >=
+                 (app_params->vbus_target - app_params->vbus_target_tolerance))
         {
             app_state = PFC_OPEN_LOOP_RUN;
             app_state_time_ms = 0U;
         }
+        else if ((app_state_time_ms >= PFC_TARGET_BUILD_TIMEOUT_MS) &&
+                 (SPWM_GetCurrentCommand() >= app_params->current_command_target))
+        {
+            PFC_AppTrip(PFC_FAULT_TARGET_TIMEOUT);
+        }
         break;
 
     case PFC_OPEN_LOOP_RUN:
-        if ((short_press != 0U) || (measurement.vac_locked == 0U))
+        if (short_press != 0U)
         {
             PFC_AppStopPower();
-            app_state = (short_press != 0U) ? PFC_STOP : PFC_FAULT_LATCH;
-            if (short_press == 0U)
-            {
-                PFC_Measure_Trip(PFC_FAULT_VAC_LOST);
-            }
+            app_state = PFC_STOP;
             app_state_time_ms = 0U;
+        }
+        else if ((measurement.vac_locked == 0U) ||
+                 (measurement.vbus < app_params->vbus_run_min))
+        {
+            PFC_AppTrip(PFC_FAULT_VAC_LOST);
         }
         break;
 
     case PFC_STOP:
         if (app_state_time_ms >= 100U)
         {
-            app_state = (PFC_AppInputReady(&measurement) != 0U) ?
-                        PFC_READY : PFC_PASSIVE_PRECHARGE;
-            app_precharge_stable_ms = 0U;
-            app_state_time_ms = 0U;
+            if (PFC_AppInputReady(&measurement) != 0U)
+            {
+                PFC_AppEnterReady();
+            }
+            else
+            {
+                app_state = PFC_PASSIVE_PRECHARGE;
+                app_state_time_ms = 0U;
+                app_precharge_stable_ms = 0U;
+            }
         }
         break;
 
     case PFC_FAULT_LATCH:
-        /* 进入故障时已经关断，锁存期间不再每1 ms重复写HAL和HRTIM寄存器。 */
         break;
 
     default:
@@ -316,9 +416,9 @@ void PFC_AppTick1ms(void)
 }
 
 /**
- * @brief  锁存应用故障并立即关闭Gate和PWM。
+ * @brief  锁存一个或多个PFC故障并立即进入FAULT_LATCH。
  * @param  fault_bits 一个或多个PFC_FaultMask位。
- * @note   可从ISR或主循环调用；不会自动清故障或重新启动。
+ * @note   可从主循环或ISR调用；底层关断不阻塞，故障后不允许软件自动恢复。
  */
 void PFC_AppTrip(uint32_t fault_bits)
 {
@@ -326,39 +426,48 @@ void PFC_AppTrip(uint32_t fault_bits)
     app_state = PFC_FAULT_LATCH;
 }
 
-/** @brief 返回当前状态；可供OLED、VOFA和调试器只读。 */
+/**
+ * @brief  读取当前PFC状态。
+ * @retval 当前PFC_State；供显示、VOFA和安全监督只读。
+ */
 PFC_State PFC_AppGetState(void)
 {
     return app_state;
 }
 
 /**
- * @brief  检查100 ms监督周期内ADC序列和Gate状态是否与状态机一致。
- * @retval 1允许本周期刷新IWDG，0禁止刷新并等待IWDG复位。
- * @note   只在主循环每100 ms调用一次；调用本身会更新上次ADC序列基准。
+ * @brief  检查当前参数档是否已通过完整板级标定和范围校验。
+ * @retval 1表示允许继续评估带功率条件，0表示只能运行采样标定流程。
+ */
+uint8_t PFC_AppCalibrationValid(void)
+{
+    return PFC_Params_IsValid(app_params);
+}
+
+/**
+ * @brief  检查最近监督窗口内的ADC、控制心跳、状态机和HRTIM软件状态一致性。
+ * @retval 1表示本次允许刷新IWDG，0表示至少一个健康条件不成立。
+ * @note   主循环每100 ms调用一次；函数会更新内部基线，不能在同一周期重复调用。
  */
 uint8_t PFC_AppWatchdogHealthy(void)
 {
     PFC_Measurement measurement;
-    uint8_t healthy;
+    uint8_t power_state; /* 1表示状态机当前要求PWM输出开放。 */
+    uint8_t healthy;     /* 本次所有监督条件的合并结果。 */
 
     PFC_Measure_GetSnapshot(&measurement);
+    power_state = (uint8_t)((app_state == PFC_OPEN_LOOP_RAMP) ||
+                            (app_state == PFC_OPEN_LOOP_RUN));
     healthy = (uint8_t)((measurement.adc1_sequence != app_last_adc1_sequence) &&
                         (measurement.adc2_sequence != app_last_adc2_sequence) &&
+                        (measurement.fast_heartbeat != app_last_fast_heartbeat) &&
+                        (measurement.raw_valid != 0U) &&
                         (measurement.fault_bits == PFC_FAULT_NONE) &&
-                        (app_state != PFC_FAULT_LATCH));
+                        (app_state != PFC_FAULT_LATCH) &&
+                        (PFC_HRTIM_CountersStarted() != 0U) &&
+                        (PFC_HRTIM_OutputsEnabled() == power_state));
     app_last_adc1_sequence = measurement.adc1_sequence;
     app_last_adc2_sequence = measurement.adc2_sequence;
-
-    if ((app_state == PFC_OPEN_LOOP_RAMP) || (app_state == PFC_OPEN_LOOP_RUN))
-    {
-        healthy = (uint8_t)(healthy &&
-            (HAL_GPIO_ReadPin(PFC_GATE_EN_GPIO_Port, PFC_GATE_EN_Pin) == GPIO_PIN_SET));
-    }
-    else
-    {
-        healthy = (uint8_t)(healthy &&
-            (HAL_GPIO_ReadPin(PFC_GATE_EN_GPIO_Port, PFC_GATE_EN_Pin) == GPIO_PIN_RESET));
-    }
+    app_last_fast_heartbeat = measurement.fast_heartbeat;
     return healthy;
 }
