@@ -46,5 +46,6 @@
 02openloop\main.o: ../Core/Inc/inv_measure.h
 02openloop\main.o: D:\Keil5\ARM\ARMCC\Bin\..\include\stdbool.h
 02openloop\main.o: ../Core/Inc/inv_open_loop.h
+02openloop\main.o: ../Core/Inc/inv_user_config.h
 02openloop\main.o: ../Core/Inc/iwdg.h
 02openloop\main.o: ../Core/Inc/vofa.h

@@ -36,5 +36,6 @@
 04-1finalloop\pfc_measure.o: ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_uart.h
 04-1finalloop\pfc_measure.o: ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_uart_ex.h
 04-1finalloop\pfc_measure.o: ../Core/Inc/pfc_params.h
+04-1finalloop\pfc_measure.o: ../Core/Inc/pfc_user_config.h
 04-1finalloop\pfc_measure.o: ../Core/Inc/pfc_hrtim.h
 04-1finalloop\pfc_measure.o: D:\Keil5\ARM\ARMCC\Bin\..\include\math.h

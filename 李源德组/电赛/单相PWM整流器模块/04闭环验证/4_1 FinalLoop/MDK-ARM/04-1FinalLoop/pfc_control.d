@@ -37,6 +37,7 @@
 04-1finalloop\pfc_control.o: ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_uart_ex.h
 04-1finalloop\pfc_control.o: ../Core/Inc/pfc_measure.h
 04-1finalloop\pfc_control.o: ../Core/Inc/pfc_params.h
+04-1finalloop\pfc_control.o: ../Core/Inc/pfc_user_config.h
 04-1finalloop\pfc_control.o: ../Core/Inc/PI.h
 04-1finalloop\pfc_control.o: ../Core/Inc/pr.h
 04-1finalloop\pfc_control.o: ../Core/Inc/SPWM.h

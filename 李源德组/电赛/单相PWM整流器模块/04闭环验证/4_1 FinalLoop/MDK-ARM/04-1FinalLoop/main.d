@@ -43,6 +43,7 @@
 04-1finalloop\main.o: ../Core/Inc/OLED.h
 04-1finalloop\main.o: ../Core/Inc/pfc_measure.h
 04-1finalloop\main.o: ../Core/Inc/pfc_params.h
+04-1finalloop\main.o: ../Core/Inc/pfc_user_config.h
 04-1finalloop\main.o: ../Core/Inc/pfc_hrtim.h
 04-1finalloop\main.o: ../Core/Inc/iwdg.h
 04-1finalloop\main.o: ../Core/Inc/vofa.h
