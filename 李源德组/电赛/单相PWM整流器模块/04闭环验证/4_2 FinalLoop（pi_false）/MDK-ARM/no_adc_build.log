@@ -1,0 +1,13 @@
+*** Using Compiler 'V5.06 update 5 (build 528)', folder: 'D:\Keil5\ARM\ARMCC\Bin'
+Build target '04-2FinalLoop'
+compiling pfc_hrtim.c...
+compiling pfc_control.c...
+compiling pfc_app.c...
+linking...
+04-2FinalLoop\04-2FinalLoop.axf: error: L6031U: Could not open scatter description file stm32g474xx_flash.sct: No such file or directory
+Not enough information to list image symbols.
+Not enough information to list load addresses in the image map.
+Finished: 2 information, 0 warning, 0 error and 1 fatal error messages.
+"04-2FinalLoop\04-2FinalLoop.axf" - 1 Error(s), 0 Warning(s).
+Target not created.
+Build Time Elapsed:  00:00:04

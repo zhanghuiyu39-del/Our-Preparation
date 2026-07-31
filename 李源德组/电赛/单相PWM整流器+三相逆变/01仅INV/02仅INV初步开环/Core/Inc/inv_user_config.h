@@ -42,7 +42,7 @@
 /* ======================== 用户常用配置区（通常只改这里） ======================== */
 
 /** 当前工作模式：编译期只能选择上面三个INV_MODE_*之一；修改后必须重新编译并下载。 */
-#define INV_USER_WORK_MODE INV_MODE_OPEN_LOOP /**< 默认完整低压开环；切换模式前先断开功率母线。 */
+#define INV_USER_WORK_MODE INV_MODE_PWM_WAVEFORM /**< 默认完整低压开环；切换模式前先断开功率母线。 */
 
 /** 1允许在波形/开环模式开放C/D/E六路PWM；0只运行算法和更新比较值。标定模式无条件禁止PWM。 */
 #define INV_USER_ENABLE_PWM_OUTPUT (1U) /**< 仅填0U或1U；设为1U前必须完成分级波形、驱动和Fault检查。 */
