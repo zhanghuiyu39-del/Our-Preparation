@@ -69,7 +69,8 @@
 /*
  * VOFA JustFloat发送缓存，由主循环每10 ms写入并阻塞发送，固定使用8个通道。
  * 三种运行模式的通道映射由PFC_DebugFillVofa()统一生成，避免现场调试时散改main。
- * CH7始终编码PFC状态与完整故障位；详细通道定义见项目Markdown使用说明。
+ * CH7始终编码PFC状态与完整故障位；CH8/CH9用于统计或输入功率诊断。
+ * 详细通道定义见项目Markdown使用说明。
  */
 static float vofa_data[VOFA_MAX_CHANNELS] = {0.0f};
 
@@ -112,22 +113,26 @@ static void PFC_DebugInitOledLabels(PFC_RunMode mode)
   }
   else if (mode == PFC_RUN_MODE_ENGINEERING_CHECK)
   {
-    OLED_ShowString(1, 1, "V:     R:     ");
-    OLED_ShowString(2, 1, "I:     R:     ");
-    OLED_ShowString(3, 1, "D:     H:     ");
-    OLED_ShowString(4, 1, "E:     F:     ");
+    OLED_ShowString(1, 1, "VM:    VR:    ");
+    OLED_ShowString(2, 1, "VN:    VX:    ");
+    OLED_ShowString(3, 1, "VB:     B:   ");
+    OLED_ShowString(4, 1, "E:  F:     ");
   }
   else
   {
-    OLED_ShowString(1, 1, "I:     V:     ");
-    OLED_ShowString(2, 1, "D:     R:     ");
-    OLED_ShowString(3, 1, "M:     S:  ");
-    OLED_ShowString(4, 1, "F:     H:     ");
+    /*
+     * 闭环页面只显示适合低刷新率观察的慢变量。IR、VR分别表示输入电流和输入电压RMS，
+     * 避免100 ms刷新周期恰好等于50 Hz的5个周期而把瞬时量固定在近似相同相位。
+     */
+    OLED_ShowString(1, 1, "IR:    VR:      ");
+    OLED_ShowString(2, 1, "VB:    BR:      ");
+    OLED_ShowString(3, 1, "M:     S:  D:  ");
+    OLED_ShowString(4, 1, "F:     PF:    ");
   }
 }
 
 /**
- * @brief 依据运行模式填充8路VOFA JustFloat缓存。
+ * @brief 依据运行模式填充10路VOFA JustFloat缓存。
  * @note  只由主循环每10 ms调用；函数不发送串口，也不直接读取DMA数组。
  */
 static void PFC_DebugFillVofa(const PFC_Measurement *measurement,
@@ -149,6 +154,10 @@ static void PFC_DebugFillVofa(const PFC_Measurement *measurement,
     vofa_data[4] = (float)stats->vac_min;
     vofa_data[5] = (float)stats->vac_max;
     vofa_data[6] = (float)stats->vbus_mean;
+    /* CH8=窗口序号+valid小数标志，CH9保留为0，便于确认1秒统计持续发布。 */
+    vofa_data[8] = (float)stats->window_sequence +
+                   ((stats->valid != 0U) ? 0.5f : 0.0f);
+    vofa_data[9] = 0.0f;
   }
   else if (pfc_params->run_mode == PFC_RUN_MODE_ENGINEERING_CHECK)
   {
@@ -158,7 +167,12 @@ static void PFC_DebugFillVofa(const PFC_Measurement *measurement,
     vofa_data[3] = measurement->ipfc_rms;
     vofa_data[4] = measurement->vbus;
     vofa_data[5] = measurement->vac_frequency_hz;
-    vofa_data[6] = (float)PFC_Params_GetValidationError(pfc_params);
+    /* CH6=参数错误码*1000+READY阻断位，可在VOFA中用整数除法分别解码。 */
+    vofa_data[6] =
+        (float)(PFC_Params_GetValidationError(pfc_params) * 1000U +
+                PFC_AppGetReadyBlockReason(measurement));
+    vofa_data[8] = measurement->input_active_power_w;
+    vofa_data[9] = measurement->input_power_factor;
   }
   else
   {
@@ -169,6 +183,9 @@ static void PFC_DebugFillVofa(const PFC_Measurement *measurement,
     vofa_data[4] = control->vbus_reference;
     vofa_data[5] = control->current_rms_command;
     vofa_data[6] = control->modulation;
+    vofa_data[8] = measurement->input_active_power_w;
+    /* 闭环CH9改为两位D诊断码；PF仍保留在OLED，避免F=08000时再次丢失细分原因。 */
+    vofa_data[9] = (float)control->failure_reason;
   }
   vofa_data[7] = (float)((uint32_t)PFC_AppGetState() * 1000000U +
                          measurement->fault_bits);
@@ -203,25 +220,52 @@ static void PFC_DebugRefreshOled(const PFC_Measurement *measurement,
   }
   else if (pfc_params->run_mode == PFC_RUN_MODE_ENGINEERING_CHECK)
   {
-    OLED_ShowSignedNum(1, 3, (int32_t)(measurement->vac * 100.0f), 5);
-    OLED_ShowNum(1, 11, (uint32_t)(measurement->vac_rms * 100.0f), 5);
-    OLED_ShowSignedNum(2, 3, (int32_t)(measurement->ipfc * 1000.0f), 5);
-    OLED_ShowNum(2, 11, (uint32_t)(measurement->ipfc_rms * 1000.0f), 5);
-    OLED_ShowNum(3, 3, (uint32_t)(measurement->vbus * 100.0f), 5);
-    OLED_ShowNum(3, 11, (uint32_t)(measurement->vac_frequency_hz * 100.0f), 5);
-    OLED_ShowHexNum(4, 3, PFC_Params_GetValidationError(pfc_params), 5);
-    OLED_ShowHexNum(4, 11, measurement->fault_bits, 5);
+    /* VM/VN/VX为VAC原始mean/min/max；VR为换算后的0.01 V RMS。 */
+    OLED_ShowNum(1, 4, stats->vac_mean, 4);
+    OLED_ShowNum(1, 12, (uint32_t)(measurement->vac_rms * 100.0f), 4);
+    OLED_ShowNum(2, 4, stats->vac_min, 4);
+    OLED_ShowNum(2, 12, stats->vac_max, 4);
+    /* VB单位0.01 V；B是READY阻断位，便于直接定位VAC比例或母线门槛问题。 */
+    OLED_ShowNum(3, 4, (uint32_t)(measurement->vbus * 100.0f), 5);
+    OLED_ShowHexNum(3, 12, PFC_AppGetReadyBlockReason(measurement), 3);
+    OLED_ShowHexNum(4, 3, PFC_Params_GetValidationError(pfc_params), 2);
+    OLED_ShowHexNum(4, 8, measurement->fault_bits, 5);
   }
   else
   {
-    OLED_ShowSignedNum(1, 3, (int32_t)(measurement->ipfc * 1000.0f), 5);
-    OLED_ShowSignedNum(1, 11, (int32_t)(measurement->vac * 100.0f), 5);
-    OLED_ShowNum(2, 3, (uint32_t)(measurement->vbus * 100.0f), 5);
-    OLED_ShowNum(2, 11, (uint32_t)(control->vbus_reference * 100.0f), 5);
-    OLED_ShowSignedNum(3, 3, (int32_t)(control->modulation * 10000.0f), 5);
-    OLED_ShowNum(3, 11, (uint32_t)PFC_AppGetState(), 2);
+    /*
+     * 第1行：IR单位为mA RMS，VR单位为0.01 V RMS。两者均为非负慢变量，
+     * 4位显示分别覆盖0～9.999 A和0～99.99 V，兼容当前5 V档及预留36 V档。
+     */
+    OLED_ShowNum(1, 4, (uint32_t)(measurement->ipfc_rms * 1000.0f), 4);
+    OLED_ShowNum(1, 11, (uint32_t)(measurement->vac_rms * 100.0f), 4);
+
+    /* 第2行：VB为实测母线、BR为母线参考，单位均为0.01 V。 */
+    OLED_ShowNum(2, 4, (uint32_t)(measurement->vbus * 100.0f), 4);
+    OLED_ShowNum(2, 11, (uint32_t)(control->vbus_reference * 100.0f), 4);
+
+    /*
+     * 第3行：M为调制度乘10000，范围约-9000～+9000。
+     * OLED_ShowSignedNum()会额外显示1个符号，因此Length=4总共占5列（第3～7列），
+     * 不会覆盖第8列的状态标签S；S显示PFC应用状态机的十进制编号。
+     * D显示两位十六进制控制失败原因。S=05表示等待PD0，S=11表示已接收启动命令、
+     * 正在预装载VAC/VBUS前馈并等待新正向过零；S=06才表示四路PWM已经开放。
+     * 正常运行时D应为00；进入S=10且
+     * F包含08000时，D能区分VBUS除法、PR数值、调制度和HRTIM写入等具体位置。
+     */
+    OLED_ShowSignedNum(3, 3, (int32_t)(control->modulation * 10000.0f), 4);
+    OLED_ShowNum(3, 10, (uint32_t)PFC_AppGetState(), 2);
+    OLED_ShowHexNum(3, 15, (uint32_t)control->failure_reason, 2);
+
+    /*
+     * 第4行：F为5位故障码；PF为一个完整工频窗口的软件估算值乘100。
+     * PF无效时显示0；该数只用于判断控制极性和趋势，赛题验收必须使用功率分析仪。
+     */
     OLED_ShowHexNum(4, 3, measurement->fault_bits, 5);
-    OLED_ShowNum(4, 11, control->fast_heartbeat % 100000U, 5);
+    OLED_ShowSignedNum(4, 12,
+                       (measurement->input_power_valid != 0U) ?
+                       (int32_t)(measurement->input_power_factor * 100.0f) : 0,
+                       3);
   }
 }
 
@@ -355,6 +399,8 @@ int main(void)
    * ADC序列、测量快照和故障状态均正常时才刷新，异常时允许其复位系统。
    */
   MX_IWDG_Init();
+  /* 仅在Keil/ST-Link暂停内核时冻结IWDG；脱离调试器运行时IWDG节拍不受影响。 */
+  __HAL_DBGMCU_FREEZE_IWDG();
 
   /* USER CODE END 2 */
 
@@ -455,6 +501,17 @@ int main(void)
         /* 任一路DMA停滞都先锁存同步故障，再停止刷新IWDG。 */
         PFC_Measure_Trip(PFC_FAULT_ADC_SYNC);
       }
+#if PFC_USER_RELAXED_PWM_TEST != 0U
+      else if ((PFC_AppGetState() == PFC_FAULT_LATCH) &&
+               ((safety_measurement.fault_bits & PFC_FAULT_CONTROL) != 0U))
+      {
+        /*
+         * 当前波形诊断模式下，控制故障发生后PWM已经关闭。只要两路ADC/DMA仍在推进，
+         * 继续刷新IWDG以保留S=10/F/D现场；DMA停滞仍会走上面的分支并停止喂狗。
+         */
+        (void)HAL_IWDG_Refresh(&hiwdg);
+      }
+#endif
       else if (PFC_AppWatchdogHealthy() != 0U)
       {
         (void)HAL_IWDG_Refresh(&hiwdg);
@@ -568,7 +625,7 @@ void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc)
 /**
  * @brief ADC1/2模拟看门狗1越窗回调。
  * @param hadc 发生AWD1事件的ADC句柄；ADC1对应IPFC，ADC2对应VAC。
- * @note 运行在ADC1_2中断中，只执行故障锁存和HRTIM快速关断。
+ * @note 运行在ADC1_2中断中；波形验证开关为1时全部AWD事件只到达回调，不再锁存或关PWM。
  */
 void HAL_ADC_LevelOutOfWindowCallback(ADC_HandleTypeDef *hadc)
 {
@@ -585,7 +642,7 @@ void HAL_ADC_LevelOutOfWindowCallback(ADC_HandleTypeDef *hadc)
 /**
  * @brief ADC1模拟看门狗2越窗回调，专门记录VBUS过压。
  * @param hadc 预期为ADC1句柄。
- * @note 运行在ADC1_2中断中；AWD2是硬件阈值检测，回调负责软件锁存和再次关断。
+ * @note 运行在ADC1_2中断中；波形验证开关为1时该回调不锁存故障，也不关闭PWM。
  */
 void HAL_ADCEx_LevelOutOfWindow2Callback(ADC_HandleTypeDef *hadc)
 {

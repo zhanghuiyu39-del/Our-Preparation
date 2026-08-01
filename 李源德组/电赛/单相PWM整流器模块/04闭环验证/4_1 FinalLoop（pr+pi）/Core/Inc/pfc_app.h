@@ -10,18 +10,34 @@
 /** @brief 单相PWM整流器从安全采样到PI+PR双闭环运行的应用状态。 */
 typedef enum
 {
-    PFC_SAFE = 0,          /* 复位后的强制安全等待，PWM输出关闭。 */
-    PFC_RAW_ADC_CALIBRATION, /* 原始ADC统计状态，工程量和PD0均禁用。 */
-    PFC_ENGINEERING_CHECK, /* 已标定工程量复核状态，PD0和PWM仍禁用。 */
-    PFC_ADC_CHECK,         /* 标定有效后检查同步采样和工程量有效性。 */
-    PFC_PASSIVE_PRECHARGE, /* 等待VAC同步和母线被动建立并连续稳定。 */
-    PFC_READY,             /* 启动条件满足，等待PD0完成一次有效短按。 */
-    PFC_CURRENT_LOOP_RAMP, /* PWM已开放，PR内环执行0.20 A RMS探测斜坡。 */
-    PFC_VBUS_LOOP_RAMP,    /* PI外环已无扰投入，VBUS参考按1 V/s上升。 */
-    PFC_VBUS_LOOP_RUN,     /* VBUS进入目标容差后的稳态双闭环。 */
-    PFC_STOP,              /* 人工停机后的短暂等待，采样计数器仍运行。 */
-    PFC_FAULT_LATCH        /* 故障锁存，软件不允许自动恢复。 */
+    PFC_SAFE = 0,            /* 复位后的强制安全等待，PWM输出关闭。 */
+    PFC_RAW_ADC_CALIBRATION = 1, /* 原始ADC统计状态，工程量和PD0均禁用。 */
+    PFC_ENGINEERING_CHECK = 2,   /* 已标定工程量复核状态，PD0和PWM仍禁用。 */
+    PFC_ADC_CHECK = 3,           /* 标定有效后检查同步采样和工程量有效性。 */
+    PFC_PASSIVE_PRECHARGE = 4,   /* 等待VAC同步和母线被动建立并连续稳定。 */
+    PFC_READY = 5,               /* 启动条件满足，等待PD0完成一次有效短按。 */
+    PFC_CURRENT_LOOP_RAMP = 6,   /* PWM已开放，PR内环执行探测电流斜坡。 */
+    PFC_VBUS_LOOP_RAMP = 7,      /* PI外环已无扰投入，VBUS参考按参数斜率上升。 */
+    PFC_VBUS_LOOP_RUN = 8,       /* VBUS进入目标容差后的稳态双闭环。 */
+    PFC_STOP = 9,                /* 人工停机后的短暂等待，采样计数器仍运行。 */
+    PFC_FAULT_LATCH = 10,        /* 故障锁存，软件不允许自动恢复。 */
+    PFC_PWM_PRIME = 11           /* PD0后等待正向过零并预装载首周期Compare，输出仍关闭。 */
 } PFC_State;
+
+/** @brief READY启动条件的诊断位；可组合显示，0表示全部实时条件满足。 */
+typedef enum
+{
+    PFC_READY_BLOCK_NONE       = 0U,
+    PFC_READY_BLOCK_MODE       = 1U << 0, /* 当前不是已确认标定的闭环模式。 */
+    PFC_READY_BLOCK_PARAM      = 1U << 1, /* 参数数值或标定确认无效。 */
+    PFC_READY_BLOCK_MEASUREMENT = 1U << 2,/* 工程量快照尚未有效。 */
+    PFC_READY_BLOCK_VAC_LOCK   = 1U << 3, /* VAC正向过零同步尚未锁定。 */
+    PFC_READY_BLOCK_VAC_RMS    = 1U << 4, /* VAC RMS不在额定值正负20%内。 */
+    PFC_READY_BLOCK_VAC_FREQ   = 1U << 5, /* VAC频率超出参数档允许范围。 */
+    PFC_READY_BLOCK_VBUS_LOW   = 1U << 6, /* 被动母线低于启动下限。 */
+    PFC_READY_BLOCK_VBUS_HIGH  = 1U << 7, /* 母线达到告警值，不允许再次投入PWM。 */
+    PFC_READY_BLOCK_FAULT      = 1U << 8  /* 已存在锁存故障。 */
+} PFC_ReadyBlockMask;
 
 /**
  * @brief  初始化PFC状态机、PD0消抖和PI+PR双闭环控制器。
@@ -55,6 +71,14 @@ void PFC_AppTrip(uint32_t fault_bits);
  * @retval 当前PFC_State。
  */
 PFC_State PFC_AppGetState(void);
+
+/**
+ * @brief  返回当前不能进入READY或开放PWM的具体原因。
+ * @param  measurement 主循环读取的一致性测量快照。
+ * @retval PFC_ReadyBlockMask按位组合；0表示实时启动条件全部满足。
+ * @note   该接口只诊断，不清故障、不改变状态，也不操作HRTIM输出。
+ */
+uint16_t PFC_AppGetReadyBlockReason(const PFC_Measurement *measurement);
 
 /**
  * @brief  检查当前活动参数是否可用于ADC工程量换算。

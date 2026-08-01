@@ -68,6 +68,14 @@ bool INV_OpenLoop_Init(const INV_OpenLoopConfig *config);
 bool INV_OpenLoop_SetFrequency(INV_OutputFrequency frequency);
 
 /**
+ * @brief 读取当前DDS输出频率。
+ * @param frequency 接收当前频率的地址，只能在非空时写入。
+ * @retval true 模块已初始化且读取成功；false 地址为空或模块未初始化。
+ * @note 可由1 ms主循环调用；读取期间使用短临界区，不能在此函数内阻塞。
+ */
+bool INV_OpenLoop_GetFrequency(INV_OutputFrequency *frequency);
+
+/**
  * @brief 更新开环使用的母线电压和目标线电压。
  * @param dc_bus_v 当前直流母线电压，单位V，必须大于0。
  * @param line_rms_v 目标线电压基波有效值，单位Vrms，必须大于0。

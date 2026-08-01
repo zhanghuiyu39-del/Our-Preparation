@@ -65,11 +65,11 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
   HAL_GPIO_Init(OLED_SCL_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : START_KEY_Pin */
-  GPIO_InitStruct.Pin = START_KEY_Pin;
+  /*Configure GPIO pins : START_KEY_Pin SWITCH_FRQ_Pin */
+  GPIO_InitStruct.Pin = START_KEY_Pin|SWITCH_FRQ_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
-  HAL_GPIO_Init(START_KEY_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
   /*Configure GPIO pin : OLED_SDA_Pin */
   GPIO_InitStruct.Pin = OLED_SDA_Pin;

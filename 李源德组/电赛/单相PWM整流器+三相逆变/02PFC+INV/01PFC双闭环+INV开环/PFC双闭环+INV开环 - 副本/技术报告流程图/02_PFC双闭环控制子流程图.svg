@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2200" height="1200" viewBox="0 0 2200 1200">
+  <defs>
+    <style>
+      .title{font:700 50px SimSun,Microsoft YaHei,sans-serif;fill:#20252b}.sub{font:27px SimSun,Microsoft YaHei,sans-serif;fill:#59636e}
+      .box{stroke:#343a40;stroke-width:3;rx:16;ry:16}.txt{font:29px SimSun,Microsoft YaHei,sans-serif;fill:#20252b;text-anchor:middle;dominant-baseline:middle}
+      .small{font:24px SimSun,Microsoft YaHei,sans-serif;fill:#343a40;text-anchor:middle}.arr{fill:none;stroke:#3d4650;stroke-width:4;marker-end:url(#a)}
+      .green{fill:#dce9dc}.blue{fill:#dceaf5}.gray{fill:#eef2f5}.yellow{fill:#f5edcf}.red{fill:#f3d8d4}
+    </style>
+    <marker id="a" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0 0L12 6L0 12Z" fill="#3d4650"/></marker>
+  </defs>
+  <rect width="2200" height="1200" fill="#fff"/>
+  <text x="1100" y="75" class="title" text-anchor="middle">PFC电压外环 + 电流内环控制流程</text>
+  <text x="1100" y="118" class="sub" text-anchor="middle">ADC1完整DMA回调为唯一10 kHz控制入口，PI外环每10帧执行一次</text>
+
+  <rect x="90" y="190" width="350" height="120" class="box blue"/>
+  <text x="265" y="235" class="txt"><tspan x="265">HRTIM Trigger 1</tspan><tspan x="265" dy="38">10 kHz同步触发</tspan></text>
+  <path d="M440 250H510" class="arr"/>
+  <rect x="510" y="170" width="390" height="160" class="box blue"/>
+  <text x="705" y="215" class="txt"><tspan x="705">ADC2：VAC</tspan><tspan x="705" dy="38">ADC1：IPFC、VBUS</tspan><tspan x="705" dy="38">循环DMA完整帧</tspan></text>
+  <path d="M900 250H970" class="arr"/>
+  <rect x="970" y="190" width="360" height="120" class="box blue"/>
+  <text x="1150" y="235" class="txt"><tspan x="1150">发布一致性测量快照</tspan><tspan x="1150" dy="38">校验序列与工程量</tspan></text>
+
+  <path d="M1150 310V405H465" class="arr"/>
+  <rect x="90" y="405" width="375" height="130" class="box green"/>
+  <text x="277" y="450" class="txt"><tspan x="277">VAC归一化</tspan><tspan x="277" dy="38">生成同相瞬时电流参考</tspan></text>
+  <path d="M465 470H535" class="arr"/>
+  <rect x="535" y="405" width="370" height="130" class="box green"/>
+  <text x="720" y="450" class="txt"><tspan x="720">i_ref - IPFC</tspan><tspan x="720" dy="38">得到电流误差</tspan></text>
+  <path d="M905 470H975" class="arr"/>
+  <rect x="975" y="405" width="360" height="130" class="box green"/>
+  <text x="1155" y="450" class="txt"><tspan x="1155">10 kHz PR电流内环</tspan><tspan x="1155" dy="38">限幅与有限数检查</tspan></text>
+
+  <path d="M1150 310V660H1570" class="arr"/>
+  <polygon points="1570,590 1740,660 1570,730 1400,660" class="yellow" stroke="#343a40" stroke-width="3"/>
+  <text x="1570" y="650" class="small"><tspan x="1570">累计10帧？</tspan><tspan x="1570" dy="32">1 kHz外环节拍</tspan></text>
+  <text x="1760" y="642" class="small">是</text>
+  <path d="M1740 660H1810" class="arr"/>
+  <rect x="1810" y="590" width="300" height="140" class="box green"/>
+  <text x="1960" y="625" class="small"><tspan x="1960">VBUS经100 Hz陷波</tspan><tspan x="1960" dy="34">PI电压外环</tspan><tspan x="1960" dy="34">输出I_rms_cmd</tspan></text>
+  <path d="M1960 730V815H280V535" class="arr"/>
+
+  <path d="M1335 470H1420" class="arr"/>
+  <rect x="1420" y="405" width="330" height="130" class="box green"/>
+  <text x="1585" y="450" class="txt"><tspan x="1585">VAC前馈 - PR输出</tspan><tspan x="1585" dy="38">得到桥侧电压指令</tspan></text>
+  <path d="M1750 470H1820" class="arr"/>
+  <rect x="1820" y="405" width="290" height="130" class="box green"/>
+  <text x="1965" y="450" class="txt"><tspan x="1965">除以VBUS</tspan><tspan x="1965" dy="38">限制调制度±0.90</tspan></text>
+
+  <path d="M1965 535V870" class="arr"/>
+  <rect x="1580" y="870" width="530" height="130" class="box green"/>
+  <text x="1845" y="915" class="txt"><tspan x="1845">SPWM_ApplyModulation()</tspan><tspan x="1845" dy="38">写HRTIM A/B Compare预装载</tspan></text>
+  <path d="M1580 935H1460" class="arr"/>
+  <rect x="960" y="870" width="500" height="130" class="box gray"/>
+  <text x="1210" y="915" class="txt"><tspan x="1210">周期更新边界同步生效</tspan><tspan x="1210" dy="38">形成10 kHz互补PWM</tspan></text>
+
+  <rect x="90" y="940" width="660" height="145" rx="20" fill="#f8fafb" stroke="#91a0ad" stroke-width="2"/>
+  <text x="420" y="980" class="small"><tspan x="420">控制目标</tspan><tspan x="420" dy="34">PI稳定约60 V直流母线</tspan><tspan x="420" dy="34">PR使输入电流跟随VAC，提高输入功率因数</tspan></text>
+</svg>

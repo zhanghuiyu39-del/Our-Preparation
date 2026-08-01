@@ -14,9 +14,9 @@ extern "C" {
  * DMA数组只供HAL写入；控制、OLED和VOFA必须读取已发布快照。
  */
 
-extern volatile uint16_t INV_Adc3Dma[2]; /**< Rank1=IU，Rank2=VUV；DMA写入。 */
-extern volatile uint16_t INV_Adc4Dma[2]; /**< Rank1=IV，Rank2=VVW；DMA写入。 */
-extern volatile uint16_t INV_Adc5Dma[2]; /**< Rank1=IW，Rank2=VWU；DMA写入。 */
+extern volatile uint16_t INV_Adc3Dma[2]; /**< Rank1=IU(本次忽略)，Rank2=VUV；DMA写入。 */
+extern volatile uint16_t INV_Adc4Dma[2]; /**< Rank1=IV(本次忽略)，Rank2=VVW；DMA写入。 */
+extern volatile uint16_t INV_Adc5Dma[2]; /**< Rank1=IW(本次忽略)，Rank2=VWU；DMA写入。 */
 
 /** 可组合锁存的逆变故障位，复位前不自动清除。 */
 typedef enum
@@ -66,7 +66,7 @@ typedef struct
     uint8_t rail_confirm_frames;
 } INV_MeasureConfig;
 
-/** ADC标定结果；主循环、VOFA和Keil Watch只读该快照。 */
+/** ADC标定结果；主循环和VOFA只读该快照。 */
 typedef struct
 {
     uint16_t offset[6];          /**< ZERO步骤得到的六路平均零点码。 */
@@ -79,15 +79,13 @@ typedef struct
     uint8_t valid;               /**< 结果通过最小码差和有限数检查后为1。 */
 } INV_CalibrationResult;
 
-/** ISR更新的最新标定结果，专供Keil Watch观察；业务代码使用快照接口。 */
-extern volatile INV_CalibrationResult inv_calibration_result;
 
-/** ADC3/4/5一个同步触发周期对应的六通道测量快照。 */
+/** ADC3/4/5一个同步触发周期对应的测量快照；本次INV只使用三路线电压。 */
 typedef struct
 {
-    uint16_t iu_raw;  /**< U相电流ADC原始码，范围0～4095。 */
-    uint16_t iv_raw;  /**< V相电流ADC原始码，范围0～4095。 */
-    uint16_t iw_raw;  /**< W相电流ADC原始码，范围0～4095。 */
+    uint16_t iu_raw;  /**< 保留兼容字段；本版INV不使用U相电流。 */
+    uint16_t iv_raw;  /**< 保留兼容字段；本版INV不使用V相电流。 */
+    uint16_t iw_raw;  /**< 保留兼容字段；本版INV不使用W相电流。 */
     uint16_t vuv_raw; /**< U-V线电压ADC原始码，范围0～4095。 */
     uint16_t vvw_raw; /**< V-W线电压ADC原始码，范围0～4095。 */
     uint16_t vwu_raw; /**< W-U线电压ADC原始码，范围0～4095。 */
@@ -120,14 +118,14 @@ typedef struct
 bool INV_Measure_Init(const INV_MeasureConfig *config);
 
 /**
- * @brief 为ADC3/4/5的两个规则Rank配置运行期模拟看门狗窗口。
+ * @brief 为ADC3/4/5的Rank2线电压配置运行期模拟看门狗窗口。
  * @param hadc3_handle ADC3句柄，AWD1监视IU、AWD2监视VUV。
  * @param hadc4_handle ADC4句柄，AWD1监视IV、AWD2监视VVW。
  * @param hadc5_handle ADC5句柄，AWD1监视IW、AWD2监视VWU。
- * @retval HAL_OK 三个ADC的六个监视窗口配置成功，或当前处于原始标定模式而保持IOC宽窗口。
+ * @retval HAL_OK 三个ADC的三个线电压监视窗口配置成功，或当前处于原始标定模式而保持IOC宽窗口。
  * @retval HAL_ERROR 句柄无效、阈值不合法或HAL配置失败。
  * @note 必须在ADC校准后、HAL_ADC_Start_DMA()前调用；不启动ADC、不清故障，也不开放PWM。
- *       当前窗口是“防贴轨”诊断窗口，不是已经完成量程标定后的物理过流阈值。
+ *       当前窗口是“防贴轨”诊断窗口，不是物理过流阈值；越窗只记录，不关闭INV PWM。
  */
 HAL_StatusTypeDef INV_Measure_ConfigureWatchdogs(ADC_HandleTypeDef *hadc3_handle,
                                                   ADC_HandleTypeDef *hadc4_handle,

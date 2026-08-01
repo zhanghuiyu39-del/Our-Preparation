@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="2240" viewBox="0 0 1600 2240">
+  <defs>
+    <style>
+      .title{font:700 54px SimSun,Microsoft YaHei,sans-serif;fill:#20252b}
+      .subtitle{font:28px SimSun,Microsoft YaHei,sans-serif;fill:#59636e}
+      .node{stroke:#343a40;stroke-width:3;rx:18;ry:18}
+      .txt{font:32px SimSun,Microsoft YaHei,sans-serif;fill:#20252b;text-anchor:middle;dominant-baseline:middle}
+      .small{font:26px SimSun,Microsoft YaHei,sans-serif;fill:#343a40;text-anchor:middle}
+      .arrow{fill:none;stroke:#3d4650;stroke-width:4;marker-end:url(#arrow)}
+      .fault{fill:none;stroke:#c9574c;stroke-width:5;marker-end:url(#arrowRed)}
+      .loop{fill:none;stroke:#6e7c87;stroke-width:3;stroke-dasharray:10 8;marker-end:url(#arrow)}
+    </style>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0,0 L12,6 L0,12 z" fill="#3d4650"/></marker>
+    <marker id="arrowRed" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0,0 L12,6 L0,12 z" fill="#c9574c"/></marker>
+  </defs>
+  <rect width="1600" height="2240" fill="#ffffff"/>
+  <text x="800" y="80" class="title" style="font-size:46px">PFC双闭环 + INV开环联合主流程</text>
+  <text x="800" y="126" class="subtitle" text-anchor="middle">赛题模式：36 V / 50 Hz输入，三相32 V线电压，60 Hz或30 Hz输出</text>
+
+  <rect x="470" y="175" width="660" height="100" rx="50" fill="#e9eef3" class="node"/>
+  <text x="800" y="225" class="txt">系统复位 / 上电</text>
+  <path d="M800 275 V330" class="arrow"/>
+
+  <rect x="400" y="330" width="800" height="125" fill="#f7e6e3" class="node"/>
+  <text x="800" y="382" class="txt"><tspan x="800" dy="0">立即关闭HRTIM A～E全部输出</tspan><tspan x="800" dy="42">PFC、INV保持安全状态</tspan></text>
+  <path d="M800 455 V510" class="arrow"/>
+
+  <rect x="330" y="510" width="940" height="145" fill="#eef2f5" class="node"/>
+  <text x="800" y="562" class="txt"><tspan x="800" dy="0">初始化系统时钟、GPIO、DMA、HRTIM</tspan><tspan x="800" dy="42">ADC1～5、OLED、USART2及联合控制模块</tspan></text>
+  <path d="M800 655 V710" class="arrow"/>
+
+  <rect x="330" y="710" width="940" height="145" fill="#dceaf5" class="node"/>
+  <text x="800" y="762" class="txt"><tspan x="800" dy="0">校准ADC5→4→3→2→1，配置运行期AWD</tspan><tspan x="800" dy="42">启动五路循环DMA，关闭Half Transfer中断</tspan></text>
+  <path d="M800 855 V910" class="arrow"/>
+
+  <rect x="350" y="910" width="900" height="125" fill="#dceaf5" class="node"/>
+  <text x="800" y="962" class="txt"><tspan x="800" dy="0">一次启动HRTIM Master及A～E计数器</tspan><tspan x="800" dy="42">只产生10 kHz采样触发，PWM引脚仍关闭</tspan></text>
+  <path d="M800 1035 V1085" class="arrow"/>
+
+  <polygon points="800,1085 1040,1190 800,1295 560,1190" fill="#f5edcf" stroke="#343a40" stroke-width="3"/>
+  <text x="800" y="1178" class="txt"><tspan x="800">五路DMA序列、采样快照</tspan><tspan x="800" dy="42">及标定状态有效？</tspan></text>
+  <text x="1075" y="1173" class="small">否</text>
+  <path d="M1040 1190 H1360 V1770" class="fault"/>
+  <text x="815" y="1336" class="small">是</text>
+  <path d="M800 1295 V1360" class="arrow"/>
+
+  <rect x="430" y="1360" width="740" height="115" fill="#e9eef3" class="node"/>
+  <text x="800" y="1408" class="txt"><tspan x="800">启动IWDG，进入READY</tspan><tspan x="800" dy="40">等待PD0有效短按</tspan></text>
+  <path d="M800 1475 V1520" class="arrow"/>
+
+  <polygon points="800,1520 1000,1605 800,1690 600,1605" fill="#f5edcf" stroke="#343a40" stroke-width="3"/>
+  <text x="800" y="1597" class="txt">PD0短按启动？</text>
+  <text x="545" y="1590" class="small">否</text>
+  <path d="M600 1605 H300 V1418 H430" class="loop"/>
+  <text x="815" y="1728" class="small">是</text>
+  <path d="M800 1690 V1725 H340 V1760" class="arrow"/>
+
+  <rect x="120" y="1760" width="440" height="125" fill="#dce9dc" class="node"/>
+  <text x="340" y="1812" class="txt"><tspan x="340">开放HRTIM A/B</tspan><tspan x="340" dy="42">投入10 kHz PR电流环</tspan></text>
+  <path d="M560 1823 H630" class="arrow"/>
+  <rect x="630" y="1760" width="440" height="125" fill="#dce9dc" class="node"/>
+  <text x="850" y="1812" class="txt"><tspan x="850">电流跟踪合格</tspan><tspan x="850" dy="42">切入1 kHz PI母线环</tspan></text>
+  <path d="M1070 1823 H1140" class="arrow"/>
+  <polygon points="1260,1745 1400,1823 1260,1901 1120,1823" fill="#f5edcf" stroke="#343a40" stroke-width="3"/>
+  <text x="1260" y="1811" class="small"><tspan x="1260">VBUS稳定</tspan><tspan x="1260" dy="34">500 ms？</tspan></text>
+  <text x="1280" y="1940" class="small">是</text>
+  <path d="M1260 1901 V1960 H1040" class="arrow"/>
+  <text x="1435" y="1810" class="small">否/超时</text>
+  <path d="M1400 1823 H1470 V1770 H1360" class="fault"/>
+
+  <rect x="600" y="1960" width="440" height="120" fill="#f3d8d4" class="node"/>
+  <text x="820" y="2008" class="txt"><tspan x="820">置C/D/E为50%并开放输出</tspan><tspan x="820" dy="40">INV执行1 s软启动</tspan></text>
+  <path d="M600 2020 H530" class="arrow"/>
+  <rect x="110" y="1960" width="420" height="120" fill="#f3d8d4" class="node"/>
+  <text x="320" y="2008" class="txt"><tspan x="320">PFC闭环 + INV开环</tspan><tspan x="320" dy="40">进入JOINT_RUN</tspan></text>
+
+  <rect x="1180" y="2010" width="340" height="135" fill="#f7e6e3" class="node"/>
+  <text x="1350" y="2053" class="small"><tspan x="1350">故障统一入口</tspan><tspan x="1350" dy="34">关闭A～E并锁存</tspan><tspan x="1350" dy="34">停止喂狗，禁止自恢复</tspan></text>
+  <path d="M1360 1770 V2010" class="fault"/>
+
+  <path d="M320 2080 V2140 H760" class="arrow"/>
+  <rect x="760" y="2100" width="390" height="90" rx="45" fill="#e9eef3" class="node"/>
+  <text x="955" y="2145" class="txt">正常短按停机：关闭输出</text>
+  <path d="M1350 2145 V2160" class="fault"/>
+  <text x="1350" y="2188" class="small">排故后人工复位，重新执行安全初始化</text>
+</svg>

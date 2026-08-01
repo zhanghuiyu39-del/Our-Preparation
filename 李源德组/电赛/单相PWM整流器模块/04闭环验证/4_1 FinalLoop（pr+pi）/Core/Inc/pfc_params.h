@@ -10,7 +10,9 @@
 typedef enum
 {
     PFC_PROFILE_5V_TEST = 0,  /* 5 V RMS、30 ohm负载的隔离低压闭环试验。 */
-    PFC_PROFILE_CONTEST_36V   /* 36 V RMS赛题档骨架，完成标定和闭环前禁止启用。 */
+    PFC_PROFILE_36V_LIGHT_100R, /* 36 V RMS、60 V母线、100 ohm轻载调试档。 */
+    PFC_PROFILE_36V_MID_50R, /* 36 V RMS、60 V母线、50 ohm中负载调试档。 */
+    PFC_PROFILE_CONTEST_36V     /* 36 V RMS赛题满功率档骨架，完成标定和保护前禁止启用。 */
 } PFC_ProfileId;
 
 /** @brief 编译期运行模式；模式只决定工程量与功率许可，不改变ADC/HRTIM时基。 */
@@ -81,6 +83,9 @@ typedef struct
     uint16_t current_loop_timeout_ms; /* ms，电流环未通过检查的超时。 */
     uint16_t vbus_build_timeout_ms;   /* ms，母线闭环未建立目标的超时。 */
     uint16_t saturation_trip_samples;/* 10 kHz样本数，连续限幅关断门槛。 */
+    float period_saturation_ratio;   /* 0~1，一个工频周期允许的限幅样本占比。 */
+    uint8_t period_saturation_cycles;/* 个，连续严重削顶多少个工频周期后关断。 */
+    uint16_t vbus_regulation_timeout_ms; /* ms，稳态PI限幅且母线失调的关断超时。 */
 
     float ipfc_amp_per_count; /* A/count，带符号换算前的正比例系数。 */
     float vac_volt_per_count; /* V/count，带符号换算前的正比例系数。 */

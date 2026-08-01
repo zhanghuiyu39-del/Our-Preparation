@@ -1,27 +1,47 @@
-# PFC双闭环 + INV开环联合工作流程与验证注意事项
+# PFC双闭环 + INV开环工作流程与验证注意事项
 
-## 1. 当前联合工程边界
+## 1. 当前固件目标和边界
 
-本说明对应同目录的`01Final.ioc`、`Core/Src/main.c`和联合用户头文件。当前工程使用STM32G474VCT6、170 MHz HRTIM、10 kHz中心对齐PWM，不修改`.ioc`。本地当前`01Final.ioc`的SHA-256为：
+本说明对应同目录的`01Final.ioc`和联合工程源码。当前固件优先完成：
+
+- 单相PWM整流器：10 kHz PR电流内环、1 kHz PI母线外环；
+- 三相三线逆变器：10 kHz CBSVPWM开环，默认60 Hz，可改30 Hz；
+- 联合阶段PD0短按后PFC与INV并行投入；INV不等待PFC发PWM、母线闭环或VBUS质量，PD1短按在60/30 Hz间切换；
+- 主要依靠OLED、VOFA和示波器调试，不依赖Keil Watch；
+- 通过分阶段试验逐步接近三相Y接负载约1.8 A线电流。
+
+当前不使用HRTIM F和第4桥臂，不接负载中性线。INV是固定母线参数的开环控制，不能保证题目要求的`32 V ±0.1 V`、`THD <= 2%`、`PF >= 0.98`或`效率 >= 95%`。
+
+`01Final.ioc`保持不变，当前SHA-256为：
 
 ```text
-630EBF93CCF859F38662B0829E22FD1390106F91235F05AF360DE6F840BC88F6
+E545996F9CAA877A6DE1FF5FD60B3CC5F4987F39F928062E8BD587FF73F9C8C1
 ```
 
-联合固件的物理边界如下：
+## 2. 上电后的实际执行流程
 
-| 域 | 外设/引脚 | 固件职责 |
-| --- | --- | --- |
-| PFC | ADC1 IPFC/VBUS、ADC2 VAC、HRTIM A/B PA8~PA11 | 10 kHz PR电流内环、1 kHz PI母线外环 |
-| INV | ADC3 IU/VUV、ADC4 IV/VVW、ADC5 IW/VWU、HRTIM C/D/E | 三相三线CBSVPWM开环 |
-| 公共时基 | HRTIM Master CMP2、Trigger 1/2 | 同时触发五组规则ADC |
-| 保护 | PB10/HRTIM1_FLT3 | 低有效硬件关闭A~E；当前外部保护源未接 |
-| 按键 | PD0/START_KEY | 1 ms轮询、30 ms消抖、短按启停 |
-| 调试 | OLED、USART2 460800 | 仅主循环读取快照和发送 |
+```text
+HAL_Init、170 MHz系统时钟
+ -> GPIO、DMA、HRTIM、ADC1~5、USART2初始化
+ -> 立即关闭HRTIM A~E全部输出
+ -> OLED上电等待100 ms并初始化
+ -> 初始化PFC参数、PI/PR、INV测量、DDS和联合状态机
+ -> ADC5、4、3、2、1依次执行单端校准
+ -> 根据标定确认状态配置ADC模拟看门狗
+ -> ADC5、4、3、2、1依次启动循环DMA
+ -> 关闭五路DMA Half Transfer中断
+ -> 一次性启动HRTIM Master和A~E计数器
+ -> 使能HRTIM Master MREP中断，作为INV独立10 kHz控制节拍
+ -> RAW_ADC/PFC-only最多等待200 ms确认PFC采样；联合赛题档不把ADC作为INV发波门槛
+ -> 最后启动IWDG
+ -> 主循环执行1 ms状态机、10 ms VOFA、100 ms OLED和100 ms监督
+```
 
-当前只使用三相三线逆变：HRTIM F、PC6/PC7和第4桥臂保持关闭，负载中性点不得接到未启用桥臂。PB10未接真实DESAT/OCP时只能作为人工Fault测试点，不能替代独立硬件保护。
+HRTIM计数器启动不等于PWM引脚已经开放。RAW_ADC阶段中，Master和A~E计数器继续产生ADC触发，但TA1/2、TB1/2、TC1/2、TD1/2、TE1/2均保持关闭。
 
-## 2. 唯一用户配置入口
+IWDG只在当前活动域的采样、控制心跳、状态和输出许可一致时刷新。致命故障后程序停止刷新IWDG，等待复位。
+
+## 3. 唯一用户配置文件
 
 日常只修改：
 
@@ -29,41 +49,79 @@
 Core/Inc/pfc_inv_user_config.h
 ```
 
-`pfc_user_config.h`和`inv_user_config.h`是兼容包装，不再填写第二套参数。配置头中最常修改的字段：
+`pfc_user_config.h`和`inv_user_config.h`只是旧模块兼容包装，不应重复填写参数。
 
-| 宏 | 默认值 | 含义与修改后果 |
-| --- | --- | --- |
-| `PFC_INV_STAGE` | `PFC_INV_STAGE_RAW_ADC` | 选择标定、PFC-only、INV-only或联合阶段；编译期生效 |
-| `PFC_INV_ACTIVE_PROFILE` | `PFC_INV_PROFILE_5V` | 选择5 V低压档或36 V赛题骨架 |
-| `PFC_INV_PFC_CALIBRATION_CONFIRMED` | `0U` | PFC零点/比例/极性完成实测后才改为1 |
-| `PFC_INV_INV_CALIBRATION_CONFIRMED` | `0U` | INV六通道完成实测后才改为1 |
-| `PFC_INV_PWM_ENABLE` | `0U` | 1才允许状态机申请输出；未确认标定时即使填1也会编译拒绝 |
-| `PFC_INV_INV_OUTPUT_FREQUENCY` | `60U` | 只允许30或60 Hz，修改后须重新观察相序和负载 |
-
-推荐阶段值：
+### 3.1 当前默认赛题配置
 
 ```c
-/* 默认安全标定 */
-#define PFC_INV_STAGE PFC_INV_STAGE_RAW_ADC
-#define PFC_INV_PWM_ENABLE 0U
-
-/* PFC低压闭环 */
-#define PFC_INV_STAGE PFC_INV_STAGE_PFC_ONLY
-
-/* INV低压开环 */
-#define PFC_INV_STAGE PFC_INV_STAGE_INV_ONLY
-
-/* PFC先建母线，再自动投入INV */
-#define PFC_INV_STAGE PFC_INV_STAGE_JOINT_LOW_POWER
+#define PFC_INV_STAGE                  PFC_INV_STAGE_JOINT_CONTEST
+#define PFC_INV_ACTIVE_PROFILE         PFC_INV_PROFILE_36V
+#define PFC_INV_PFC_36V_CALIBRATION_CONFIRMED 1U
+#define PFC_INV_INV_CALIBRATION_CONFIRMED     0U
+#define PFC_INV_PWM_ENABLE             1U
+#define PFC_INV_PFC_RELAXED_PWM_TEST   1U
 ```
 
-修改输入电压、母线目标、线电压目标、负载或采样板电阻后，必须同步重新填写比例、保护阈值、调制度和限流值；不能只改一个电压宏。
+这是当前已分别通过独立PFC和独立INV低功率/赛题档验证后的联合默认值。上电仍不自动发波，
+必须先松开PD0并短按一次；联合程序会先尝试A/B双闭环，再允许C/D/E开环。INV确认位保持0
+也不阻止INV发波，因为本版只把三路线电压作为显示/观测，线电压ADC异常不会关闭C/D/E。
+更换采样板或修改任意ADC比例后，必须退回`RAW_ADC + PWM_ENABLE=0U`重新标定。
 
-`PFC_INV_STAGE_INV_ONLY`虽然不开放PFC A/B，但C/D/E仍以ADC1的`VBUS`为调制分母。因此，只要`PFC_INV_PWM_ENABLE=1U`，INV-only同样要求PFC和INV两套标定确认位都为`1U`；编译器会拒绝漏填PFC母线标定的配置。确认INV标定后，程序会固定使用六个`OFFSET/SCALE/POLARITY`字段，不会在带功率过程中重新估计零点。
+### 3.2 测试阶段
 
-## 3. IOC映射与数据所有权
+| 阶段 | 功能 | 活动输出 |
+| --- | --- | --- |
+| `PFC_INV_STAGE_RAW_ADC` | 五路ADC/DMA、OLED、VOFA标定 | 全部关闭 |
+| `PFC_INV_STAGE_PFC_ONLY` | 只运行PFC双闭环 | A/B |
+| `PFC_INV_STAGE_INV_ONLY` | 只运行固定60 V参数的INV开环 | C/D/E |
+| `PFC_INV_STAGE_JOINT_LOW_POWER` | PFC可选运行，INV直接投入 | A/B可选、C/D/E优先 |
+| `PFC_INV_STAGE_JOINT_CONTEST` | 36 V参数联合验证，线电流优先 | A/B可选、C/D/E优先 |
 
-`01Final.ioc`的ADC/DMA Rank必须与下面顺序一致：
+PFC-only功率阶段仍必须满足`PFC_INV_PWM_ENABLE=1U`和PFC标定确认位。INV-only及联合阶段只需满足PWM总许可和开环参数合法；INV线电压未标定时仍可发波，但OLED/VOFA只能显示原始码。
+
+### 3.3 关键PFC参数
+
+36 V档当前重要参数：
+
+| 参数 | 当前值 | 修改影响 |
+| --- | ---: | --- |
+| 输入 | 36 V RMS / 50 Hz | 改变后要重算同步、VAC量程和保护阈值 |
+| 母线目标 | 60 V | 同时影响PI目标和INV实际输出条件 |
+| 最大电流指令 | 5.8 A peak | 正弦RMS约4.10 A；用于覆盖30 ohm、60 V母线的约120 W输入需求 |
+| 电流斜率 | 2 A/s | 越大启动越快，但母线和电流冲击更大 |
+| 调制度限制 | 0.90 | 越接近1越容易进入非线性和死区失真 |
+| PR | Kp=0.50、Kr=5、输出限幅10 V | 采用独立PFC赛题档的保守10 kHz参数，先观察相位和限幅 |
+| PI | Kp=0.10、Ki=2.0 | 采用独立PFC赛题档起点；增大可加快母线响应，也会增加振荡风险 |
+
+当前目标是先得到基本整流和足够功率，不代表这组PI/PR参数已经完成最终整定。
+
+### 3.4 关键INV参数
+
+```c
+#define PFC_INV_INV_FIXED_DC_BUS_V     60.0f
+#define PFC_INV_INV_LINE_RMS_V_36V     32.0f
+#define PFC_INV_INV_OUTPUT_FREQUENCY   60U
+#define PFC_INV_INV_SOFT_START_MS      1000U
+#define PFC_INV_INV_MODULATION_LIMIT   0.90f
+```
+
+INV默认使用固定`60.0 V`计算CBSVPWM；电流优先模式下，若PFC快照中的VBUS有效且高于最小计算电压，则使用最近一次实测VBUS作为分母，母线偏低时优先把调制度推向上限争取线电流。采样无效或母线过低时回退固定值；实际线电流仍受真实能量和器件能力限制。
+
+32 V RMS线电压、60 V直流母线的理论调制度为：
+
+```text
+m = 2 * Vline_rms * sqrt(2/3) / Vdc
+  = 2 * 32 * sqrt(2/3) / 60
+  ≈ 0.871
+```
+
+该值已接近0.90上限。若线电压不足，应先测量实际母线、驱动压降和死区影响，不能直接无限提高调制度上限。
+
+频率只允许30或60 Hz。上电默认值仍由`PFC_INV_INV_OUTPUT_FREQUENCY`决定，当前为60 Hz。PD1短按后只更新DDS相位步进，保留当前32位相位累加器和软启动进度，因此运行中切换不会主动把相位清零或重新执行软启动。改变频率不会改变线电压目标，但30 Hz时电感阻抗下降、磁性器件伏秒和负载电流可能变化，必须重新观察电流与温升。
+
+## 4. ADC、DMA和控制数据流
+
+### 4.1 Rank映射
 
 | ADC | Rank 1 | Rank 2 | DMA |
 | --- | --- | --- | --- |
@@ -73,181 +131,310 @@ Core/Inc/pfc_inv_user_config.h
 | ADC4 | IV | VVW | DMA2 Channel 2 |
 | ADC5 | IW | VWU | DMA2 Channel 3 |
 
-HRTIM Master CMP2同时产生Trigger 1和Trigger 2。DMA原始数组只允许HAL写入：
+当前联合INV只使用三个Rank 2线电压通道：
 
-```c
-PFC_Adc1Dma[0]=IPFC, PFC_Adc1Dma[1]=VBUS, PFC_Adc2Dma[0]=VAC
-INV_Adc3Dma[0]=IU,   INV_Adc3Dma[1]=VUV
-INV_Adc4Dma[0]=IV,   INV_Adc4Dma[1]=VVW
-INV_Adc5Dma[0]=IW,   INV_Adc5Dma[1]=VWU
-```
+| 线电压 | MCU引脚 | ADC通道 | DMA位置 | 用途 |
+| --- | --- | --- | --- | --- |
+| VUV | PD10 | ADC3_IN7 | `INV_Adc3Dma[1]` | OLED/VOFA/标定观察 |
+| VVW | PE14 | ADC4_IN1 | `INV_Adc4Dma[1]` | OLED/VOFA/标定观察 |
+| VWU | PD14 | ADC5_IN11 | `INV_Adc5Dma[1]` | OLED/VOFA/标定观察 |
 
-OLED、VOFA和控制器都必须使用`PFC_Measure_GetSnapshot()`、`INV_Measure_GetSnapshot()`，不能直接读取正在由DMA改写的数组。
+PB0/ADC3_IN12、PD8/ADC4_IN12、PD9/ADC5_IN13仍由IOC作为Rank 1完成转换，但IU/IV/IW在本版软件中不显示、不标定、不参与控制或停机。保留双Rank是为了不修改`01Final.ioc`和CubeMX生成文件。
 
-PFC快照采用双缓冲发布。ADC1 ISR先在工作副本中完成本周期全部字段，再把结构体写入非活动缓冲区，执行数据屏障，最后用一次索引翻转发布。DMA2的INV回调优先级高于DMA1的PFC回调，即使INV在PFC发布过程中抢占，也只能读取上一个已经完整发布的VBUS快照，不会读到只更新了一半的结构体。`volatile`只保证实际内存访问，本身不提供这种一致性；一致性来自双缓冲、发布索引和短临界区。
-
-运行期模拟看门狗的实际覆盖关系如下：PFC的ADC1 AWD1监视IPFC、AWD2监视VBUS，ADC2 AWD1监视VAC；INV的ADC3/4/5各用AWD1监视Rank 1电流、AWD2监视Rank 2线电压。INV窗口由`PFC_INV_INV_ADC_RAIL_LOW_COUNT/HIGH_COUNT`给出，默认是16～4079码，只用于识别连续贴轨，不等价于完成采样比例后的安培/伏特过流阈值。RAW_ADC标定阶段不改窄窗口，避免用户故意施加标定量时被看门狗打断。
-
-## 4. 联合启动流程
+原始数组映射固定为：
 
 ```text
-HAL_Init/170 MHz时钟/GPIO
- -> 关闭A~E输出
- -> 初始化联合配置、PFC、INV、OLED
- -> ADC5、4、3、2、1单端校准
-  -> 配置PFC运行期AWD
-  -> 配置INV ADC3/4/5六路防贴轨AWD（标定模式保留IOC宽窗口）
- -> 启动ADC5、4、3、2、1循环DMA
- -> 关闭五路DMA Half Transfer中断
- -> 一次启动Master+A+B+C+D+E计数器
- -> 按当前阶段等待所需DMA序列稳定
- -> 启动IWDG
- -> 根据阶段停在标定/READY，或等待PD0
+PFC_Adc1Dma[0]=IPFC  PFC_Adc1Dma[1]=VBUS
+PFC_Adc2Dma[0]=VAC
+INV_Adc3Dma[0]=IU    INV_Adc3Dma[1]=VUV
+INV_Adc4Dma[0]=IV    INV_Adc4Dma[1]=VVW
+INV_Adc5Dma[0]=IW    INV_Adc5Dma[1]=VWU
 ```
 
-联合阶段按以下顺序投入：
+DMA数组由硬件持续改写。OLED、VOFA、状态机和控制器只读取模块发布的一致性快照，不直接读取DMA数组。
+
+### 4.2 快速路径
 
 ```text
-PD0短按
- -> 只开放PFC A/B，PR电流环从0开始
- -> 电流跟踪合格后切入PI母线环
- -> VBUS在目标容差内连续稳定500 ms
- -> 写入INV 50%初值并开放C/D/E
- -> INV 1 s软启动，调制度按实测VBUS计算
- -> JOINT_RUN
+ADC2完整回调 -> 推进VAC序列
+ADC1完整回调 -> 发布PFC同步快照 -> 10 kHz PR -> 每10帧执行1 kHz PI
+
+HRTIM Master REP重复事件（每个10 kHz周期）
+ -> 推进一次INV DDS/CBSVPWM（不读取任何ADC工程量）
+ADC3/4/5各自完整回调
+ -> 三路序列均前进后发布VUV/VVW/VWU观察快照
+ -> ADC贴轨、AWD、失步或标定无效只记录，不关闭C/D/E
 ```
 
-PFC和INV不能各自启动/停止Master。普通停机只关闭对应域输出并保留采样触发；Fault、CSS、HardFault等不可恢复异常关闭A~E全部输出并停止刷新IWDG。
-
-DMA启动仍固定覆盖ADC1~5，但启动准入和故障仲裁按阶段处理：RAW_ADC、INV-only和联合阶段要求PFC与INV采样都更新；PFC-only只要求ADC1/2正常，未接逆变采样板造成的ADC3/4/5贴轨或诊断故障只保留记录，不得阻断PFC闭环。INV-only仍必须监督ADC1，因为实测VBUS直接参与INV调制度计算。
+DMA Half Transfer不代表完整Rank帧，已在启动阶段关闭。INV控制不再依赖ADC3/4/5是否有DMA完成，
+因此线电压采样板未接、接口悬空或ADC停止时，C/D/E仍由HRTIM REP持续发波；ISR中禁止OLED、VOFA、阻塞USART和`HAL_Delay()`。
 
 ## 5. ADC标定流程
 
-### 5.1 PFC标定
+### 5.1 PFC已有参数状态
 
-1. 断开功率母线和驱动输入，只给系统板、ADC采样板供电。
-2. 设置`PFC_INV_STAGE_RAW_ADC`、两项确认位为0、`PFC_INV_PWM_ENABLE=0U`，重新编译下载。
-3. 零输入运行至少1秒，记录PFC统计快照`ipfc_mean/min/max`、`vac_mean/min/max`、`vbus_mean/min/max`。
-4. IPFC、VAC双极性零点填入`PFC_INV_PFC_5V_IPFC_ZERO_COUNT`和`...VAC_ZERO_COUNT`；VBUS单极性比例使用已知直流电压除以平均码计算。
-5. 给VAC输入已知RMS值，记录峰值码幅：`V/count = 已知峰值电压 / ((max-min)/2)`。给输入电感已知电流，计算`A/count`。
-6. 通过示波器确认正向输入电压对应软件`vac>0`、正向输入电流对应`ipfc>0`；接反只改对应极性为`-1`，不要在PR/PI中隐藏反号。
-7. 重新编译，切换`PFC_INV_STAGE_PFC_ONLY`但保持PWM=0，观察工程量、RMS、频率、AWD窗口，确认无越窗后再把PFC确认位置1。
+36 V赛题档当前直接采用独立PFC工程已实测的参数：
 
-### 5.2 INV标定
+| 量 | 零点/比例 |
+| --- | ---: |
+| IPFC | 2046 count，0.003323 A/count |
+| VAC | 2046 count，0.02730 V/count |
+| VBUS | 0.021062 V/count |
+| IPFC/VAC/桥臂极性 | +1/+1/+1 |
 
-1. 保持功率母线断开，采样板供电并运行RAW_ADC；记录`INV_Adc3/4/5Dma`六路中点和1秒变化范围。
-2. 逐通道施加已知电流或线电压，计算：`物理量/count = 已知物理量 / (实测码-零点码)`。
-3. 依据已知正向量对应的符号填写六路极性。线电压必须按`U-V、V-W、W-U`实际接线确认。
-4. 将六个offset、scale、polarity写回联合用户头，切换`PFC_INV_STAGE_INV_ONLY`且PWM=0，确认六路工程量和`IU+IV+IW`、`VUV+VVW+VWU`趋势合理。`SCALE`必须为正数；已知正向量显示为负时只把对应`POLARITY`改为`-1`。确认位为`1U`后，运行代码直接采用这些固定零点，不能再把交流波形平均为零点。
-5. 确认INV标定位置1后，先做MCU波形和驱动无母线测试，再允许低压功率输出。
+首次在联合板上仍应以PWM关闭状态复核原始码和母线比例。VAC 36 V RMS的峰值约50.9 V，
+接近当前VAC通道上部量程，若出现削顶、比例漂移或极性相反，应立即退回RAW_ADC并清零确认位。
 
-标定期间ADC输入不得悬空。采样板的1V65REF是模拟偏置，不是MCU的VREF+；零输入双极性通道通常接近2048码，但最终以实测为准。
+### 5.2 PFC复核步骤
 
-## 6. 分阶段验证
+1. 保持RAW_ADC、PWM=0，不接驱动功率。
+2. IPFC和VAC零输入时观察VOFA统计页，mean应接近2046，min/max抖动应较小。
+3. 给VAC通道施加已知隔离交流电压，计算`V/count = 已知峰值 / ((max-min)/2)`。
+4. 给IPFC通道施加已知正向电流，计算`A/count = 已知电流 / abs(raw-zero)`。
+5. 给VBUS通道施加多个已知直流电压点，计算`V/count = 已知电压 / mean(raw)`。
+6. 对0%、25%、50%、75%和接近工作上限做多点线性复核。
+7. 已知正方向换算成负数时，只修改对应`POLARITY`为-1，比例始终填正数。
+8. 保持PWM=0切到工程阶段，用万用表和示波器复核工程量后，才把当前档确认位置1。
 
-### P0：RAW_ADC无功率
+### 5.3 INV三路线电压标定
 
-- 五路DMA序列均约10 kHz递增，Half Transfer不进入业务回调。
-- OLED/VOFA显示原始码和统计窗口，`pfc_inv_state=ADC_CALIBRATION`。
-- A/B/C/D/E全部输出关闭；PD0无效。
+INV默认的2048零点、0.001 A/count和0.010 V/count只是占位值。
 
-### P1：PFC-only低压闭环
+1. RAW_ADC阶段使VUV/VVW/VWU输入处于确定安全电平，禁止悬空；IU/IV/IW接口可不接，但不得把它们作为启动条件。
+2. 记录`INV_Adc3Dma[1]`、`INV_Adc4Dma[1]`、`INV_Adc5Dma[1]`的零输入平均码，填写VUV/VVW/VWU三个`OFFSET`。
+3. 分别施加已知正向线电压，独立计算三个V/count和极性。
+4. 改变一路输入时，确认只有对应Rank2原始码明显变化，排除接错ADC或线束。
+5. 保持PWM=0时可设置确认位改善显示；即使确认位为0，INV开环仍可启动，故障码只作诊断。
 
-- 先使用隔离限流5 V RMS、50 Hz输入和30 ohm、至少5 W负载。
-- 标定确认后把阶段设为`PFC_ONLY`，PWM=1；示波器先测PA8~PA11互补PWM和约500 ns死区。
-- PD0短按后观察PR电流环，再观察PI母线参考从实测值以1 V/s爬升到9 V。
-- 任何PR持续限幅、VBUS过压、VAC丢锁、ADC贴轨或DMA失步都必须锁存停机。
-- 这里的ADC贴轨和DMA失步指活动的PFC域ADC1/2；未活动的INV域只记录诊断。切换到INV-only或联合阶段前，必须排除ADC3/4/5故障并重新完成对应准入检查。
+## 6. PD0、PD1和联合状态流程
 
-### P2：INV-only低压开环
+PD0为内部上拉、低有效按键。程序每1 ms轮询，稳定30 ms完成消抖；50~1000 ms按下后释放产生一次短按。上电必须先稳定检测到释放，避免按住按键上电后松开而误启动。
 
-- 使用已确认PFC VBUS采样，INV开环不使用固定母线作为最终调制分母，而使用ADC1发布的实测VBUS。
-- 先断开功率板，测PB12/PB13、PB14/PB15、PC8/PC9的10 kHz中心对齐互补波形。
-- 驱动器仅接逻辑电源和隔离电源时，使用差分/隔离探头测Gate-Source；不得用普通接地探头测高侧栅极。
-- 通过后使用5 V限流母线和三相对称阻性负载，观察30/60 Hz相序、线电压和电源电流。
+PD1同样为内部上拉、低有效，但拥有完全独立的消抖和按时状态：
 
-### P3：联合低功率
+- 上电必须先连续释放30 ms，随后才接受新的按下—释放周期；
+- 50~1000 ms短按释放后，当前60 Hz切到30 Hz，当前30 Hz切回60 Hz；
+- 超过1000 ms的长按不切换，机械抖动不重复产生事件；
+- INV-only、联合停止、软启动和联合运行状态均可切换；RAW_ADC和PFC-only只完成按键消抖，不初始化或改变INV频率；
+- PD1不开放或关闭PWM，不替代PD0启停，也不能清除故障锁存；
+- 切换失败视为INV参数故障，联合层关闭A~E并等待复位。
 
-1. 阶段设为`JOINT_LOW_POWER`，PFC和INV确认位均为1，PWM=1。
-2. 上电后先确认PFC A/B未异常，INV C/D/E仍关闭。
-3. PD0短按只启动PFC；母线进入目标容差并稳定500 ms后，C/D/E才自动开放。
-4. INV软启动期间线电压幅值逐渐展开；停止PD0或任一故障时A~E一起关闭，不能自动恢复。
-
-### P4：36 V赛题档
-
-先完成P0~P3再切换`PFC_INV_ACTIVE_PROFILE=PFC_INV_PROFILE_36V`。重新标定全部PFC/INV通道，核对器件耐压、驱动隔离电源、母线电容、死区和独立OCP/DESAT；36 V宏中的比例和增益只是骨架，确认位必须保持0直到实测完成。
-
-## 7. OLED、VOFA与Keil Watch
-
-OLED每100 ms由主循环刷新：
+联合阶段状态：
 
 ```text
-P:VAC原始码 I:IPFC原始码
-B:VBUS原始码 U:IU原始码
-S:联合状态 D:INV调制度千倍值
-F:联合/PFC/INV故障 H:INV控制心跳
+SAFE -> ADC_CALIBRATION -> READY
+短按PD0
+ -> INV_SOFT_START（不等待PFC）
+ -> JOINT_RUN（INV优先）
+
+PFC可并行：PFC_CURRENT_LOOP -> PFC_VBUS_RAMP -> PFC_VBUS_STABLE
 ```
 
-RAW_ADC下VOFA每10 ms交替两页：
+联合阶段PD0短按后，联合层先写三相50%占空比并开放C/D/E，INV立即执行约1 s软启动；该路径不等待PFC进入`VBUS_LOOP_RUN`，也不要求PFC A/B已经发PWM。PFC若随后正常建立母线可继续运行；PFC无PWM、只靠MOS体二极管整流或PFC诊断异常时，联合层只关闭A/B并保留INV C/D/E运行。
 
-- 页0：`CH0=0, IPFC mean/min/max, VAC mean/min/max, VBUS mean`
-- 页1：`CH0=1, IU, IV, IW, VUV, VVW, VWU, INV fault`
+当`PFC_INV_INV_CURRENT_PRIORITY_MODE=1U`时，36 V档INV线电压指令使用约33 V RMS，对固定60 V软件母线形成接近0.90的调制度，目的是在母线偏低时尽量争取线电流。该设置不能创造能量：实际线电流仍由真实VBUS、负载阻值、驱动压降、死区和MOS导通能力决定。母线不足时可能同时出现线电压下降、调制度饱和和波形失真，必须以示波器和电流探头为准。
 
-运行阶段VOFA为：`VAC、IPFC、VBUS、VUV、U相正弦、INV调制度、联合状态、故障编码`。VOFA只用于趋势观察，不能代替示波器测量50/60 Hz波形、PF、效率或THD。
+运行中再次短按执行正常停机。即使母线电压不足，INV仍优先保持C/D/E发波以争取1.8 A线电流；实际电流不足时应先检查母线来源、负载阻值、驱动供电和MOS温升，而不是继续放宽调制度上限。任何锁存致命故障后，按键不能清故障，必须排除原因并复位MCU。
 
-Keil Watch建议观察：
+## 7. 放宽保护模式
 
-```c
-PFC_Adc1Dma, PFC_Adc2Dma
-INV_Adc3Dma, INV_Adc4Dma, INV_Adc5Dma
-pfc_inv_state, pfc_inv_fault_bits
-pfc_inv_svpwm.valid, pfc_inv_svpwm.limited
-pfc_inv_svpwm.duty_u/v/w, pfc_inv_control_heartbeat
+`PFC_INV_PFC_RELAXED_PWM_TEST=1U`用于时间紧张时的隔离限流波形调试。它会降低软件诊断对PWM许可的耦合，但不会使功率级变安全。
+
+### 7.1 只用于观察、不单独关波
+
+| 项目 | 放宽模式行为 |
+| --- | --- |
+| VAC幅值、频率或过零不同步 | 不阻止READY，不因该项单独停机 |
+| VBUS低于启动门槛或未进入目标容差 | PFC继续尝试，联合投入使用宽松时序 |
+| 电流跟踪未通过、目标建立超时 | 不因该项单独停机 |
+| ADC原始码贴轨 | 不锁存范围故障；通过OLED/VOFA检查 |
+| ADC模拟看门狗越窗 | 回调不升级为联合停机 |
+| 软件过流、软件过压 | 不因阈值越界单独停机 |
+| PR或调制度持续限幅 | 计数饱和但不因限幅单独停机 |
+| INV线电压采样贴轨、AWD越窗、ADC3/4/5失步或采样回调错误 | 只记录故障位，不关闭C/D/E；IWDG由HRTIM控制心跳监督 |
+| 联合/INV-only阶段的PFC ADC1/2校准、AWD或DMA启动失败 | 只锁存PFC诊断，HRTIM REP和C/D/E仍允许完成INV开环验证 |
+
+### 7.2 仍然必须立即关闭A~E
+
+| 致命项目 | 原因 |
+| --- | --- |
+| HRTIM Master控制节拍停止 | INV DDS/CBSVPWM和IWDG心跳均依赖HRTIM REP；该节拍停止后才属于致命控制链路故障 |
+| 非有限浮点数 | Compare命令不可预测 |
+| SPWM/CBSVPWM计算失败 | 调制命令无效 |
+| HRTIM Compare写入或输出启动失败 | PWM硬件状态不可信 |
+| PB10/HRTIM FLT3 | 硬件Fault路径 |
+| CSS、NMI、HardFault或不可恢复HAL错误 | CPU/时钟执行不可信 |
+| 活动控制心跳停止 | 10 kHz控制链路不再前进 |
+
+PB10外部目前未接真实OCP/DESAT，UCC21520板也没有返回给MCU的nFAULT。软件放宽、T5A保险丝和ADC采样都不能阻止MOSFET直通的微秒级破坏。带功率必须使用隔离限流电源并准备物理断电。
+
+## 8. OLED和VOFA
+
+### 8.1 OLED
+
+OLED每100 ms在主循环刷新：
+
+```text
+P:VAC原始码   I:IPFC原始码
+UV:VUV原始码  VW:VVW原始码
+WU:VWU原始码  F:INV频率Hz
+F:合并故障码  H:INV心跳低5位
 ```
 
-调试器暂停CPU会同时暂停10 kHz控制和IWDG刷新；带功率测试时禁止断点、单步和长时间暂停。
+注意：OLED中的PFC和VUV/VVW/VWU均为ADC原始码，不是伏特或安培；INV Rank1电流不显示。第3行频率在INV活动阶段显示30或60。H应随HRTIM Master REP驱动的INV控制帧前进。INV线电压ADC故障码只用于诊断，PWM是否继续由C/D/E硬件状态和控制心跳决定。INV调制度继续通过VOFA CH5观察。
 
-INV快速回调更新CBSVPWM结果时，联合层在短临界区内复制完整遥测快照，再交给OLED和VOFA。显示允许存在一个10 ms或100 ms刷新周期的延迟，但不会把不同控制周期的`duty_u/v/w`、调制度和限幅状态混在同一帧中。
+### 8.2 VOFA
 
-## 8. 故障与禁止升压条件
+USART2使用460800 baud，主循环每10 ms发送一次8通道JustFloat数据。串口发送失败不参与PWM许可。
 
-| 现象 | 可能原因 | 处理 |
-| --- | --- | --- |
-| 五路序列停止/不一致 | DMA未启动、Rank或触发错误 | 断电，核对DMA长度、Trigger和回调 |
-| 原始码连续贴轨 | 输入悬空、采样板过压或比例错误 | 立即断开功率，检查量程和地 |
-| PFC电流反相 | IPFC极性或桥臂极性错误 | 只改配置极性，低压重新验证 |
-| VBUS不上升 | VAC未锁定、PR限幅、负载过重 | 降低电流指令，先空载/轻载整定 |
-| INV无法投入 | VBUS未稳定、标定未确认或PWM=0 | 先查联合状态和确认位，不要强制跳过 |
-| `PFC_INV_FAULT_VBUS_STALE` | ADC1的VBUS快照停滞、欠压、过压或INV先于可用VBUS投入 | 检查ADC1 DMA、VBUS比例、母线电容和PFC状态；故障后必须复位，不能手动重开C/D/E |
-| PWM重叠/桥臂发热 | 死区/驱动接线错误 | 立即断母线，测Gate-Source和上下管对应关系 |
-| Fault后周期性重启 | IWDG未刷新，属于预期锁存保护 | 读取故障码，复位前排除原因 |
+RAW_ADC阶段交替发送两页：
 
-以下任一条件成立时禁止升高母线或接入大功率负载：标定确认位为0、没有独立OCP/DESAT、PB10保护源未接、ADC输入贴轨、PWM互补/死区未实测、采样比例未核对、普通接地探头接触高侧浮地、30 ohm负载功率等级不足。
+| CH | 第0页：PFC统计 | 第1页：INV原始码 |
+| ---: | --- | --- |
+| 0 | 0，页号 | 1，页号 |
+| 1 | IPFC mean | VUV原始码 |
+| 2 | IPFC min | VVW原始码 |
+| 3 | IPFC max | VWU原始码 |
+| 4 | VAC mean | ADC3序列 |
+| 5 | VAC min | ADC4序列 |
+| 6 | VAC max | ADC5序列 |
+| 7 | VBUS mean | INV故障位 |
 
-## 9. 赛题第1~5项的现实边界
+非RAW阶段：
 
-联合代码可以提供PFC母线闭环和三相INV开环的分阶段验证，但INV开环本身不能保证赛题要求的`32 V±0.1 V`、输出调节率、`PF≥0.98`、`效率≥95%`和`THD≤2%`。最终验收还需要：
+| CH | 数据 |
+| ---: | --- |
+| 0 | VUV原始码 |
+| 1 | VVW原始码 |
+| 2 | VWU原始码 |
+| 3 | 当前INV频率，Hz |
+| 4 | INV U相归一化正弦参考 |
+| 5 | INV U相调制度 |
+| 6 | 联合状态号 |
+| 7 | PFC、INV和联合故障位组合 |
 
-1. 36 V RMS输入、60 Hz下完成PFC输入电流闭环和母线稳定；
-2. 逆变输出电压闭环或等效补偿，不能只依赖开环调制度；
-3. 独立功率保护、限流和热设计；
-4. 用示波器/功率分析仪按规定带宽测量线电压、频率、PF、效率和THD；
-5. 30 Hz输出时重新验证DDS、采样相位、滤波器和控制器离散参数。
+10 ms发送周期只有100 Hz显示带宽，不适合准确判断10 kHz开关波形，也可能让50/60 Hz曲线点数较少。CH3只表示软件当前频率指令；PWM、死区、实际输出频率、相位和THD必须以示波器或功率分析仪为准。
 
-本目录的默认交付目标是“先可观测、可标定、可低功率安全运行”，而不是宣称已经满足最终高压赛题指标。
+## 9. 分阶段上板流程
 
-## 10. 当前验证记录
+任何一级未通过，都不要进入下一级。
 
-- `01Final.ioc`未修改，SHA-256保持为本文第1节记录的值。
-- Keil工程`MDK-ARM/01.uvprojx`已完成本机构建，结果为`0 Error(s), 0 Warning(s)`。
-- PFC、INV、联合协调、OLED和VOFA源文件在Keil工程中各收录一次。
-- 已完成回调签名、头文件依赖、分阶段故障仲裁、PFC双缓冲快照和联合遥测快照的静态核对。
-- 尚未完成示波器波形、DWT最坏执行时间、ADC实物标定、Fault无CPU关断和带功率验收；这些项目必须按P0到P4顺序上板验证，不能用编译通过代替。
+### P0：编译和无功率RAW_ADC
 
-## 10. 本次静态与构建验证记录
+1. 做无功率标定前，先把默认赛题配置临时改为`RAW_ADC + 36 V档 + PWM=0`。
+2. 编译并下载，确认OLED和VOFA更新。
+3. 确认五路ADC原始码均在0~4095且不长期贴轨。
+4. 改变一路模拟输入，确认只有对应通道明显变化。
+5. PD0无论如何操作，A~E都不应输出PWM。
 
-- `01Final.ioc`保持未修改，SHA-256为`630EBF93CCF859F38662B0829E22FD1390106F91235F05AF360DE6F840BC88F6`。
-- Keil工程`MDK-ARM/01.uvprojx`已收录PFC、INV、联合协调层、OLED和VOFA模块，各源文件只收录一次。
-- 使用Keil命令行完整构建，结果为`0 Error(s), 0 Warning(s)`并生成AXF/HEX。
-- 默认配置仍为`RAW_ADC + 5 V档 + 两套标定未确认 + PWM禁止`，因此本次构建不能直接开放功率输出。
-- 当前只完成代码静态检查和编译验证，尚未代替上板检查、DWT执行时间测试、Fault注入或5 V限流带功率验收。
+### P1：MCU引脚PWM
+
+1. 不连接驱动板和功率母线。
+2. 选择PFC-only或INV-only，完成对应标定确认并临时设PWM=1。
+3. 确认A/B或C/D/E为10 kHz中心对齐互补PWM。
+4. 确认死区约500 ns，启动前占空比为50%。
+5. 检查上下管映射，不能只按线色判断。
+
+### P2：驱动板无母线
+
+1. 只接驱动板逻辑和隔离侧电源，不接功率母线。
+2. 先测PFC A/B，再测INV C/D/E。
+3. Gate必须相对各自Source测量，高侧使用差分或隔离探头。
+4. 确认无上下管重叠、幅值正常、关断可靠。
+
+### P3：PFC低功率
+
+1. 使用隔离、限流交流源，先用60~100 ohm直流负载。
+2. 先PFC-only，限流从较小值开始。
+3. 短按PD0，观察IPFC与VAC是否基本同相，VBUS是否可控上升。
+4. 检查PR/SPWM是否长期饱和、母线是否快速过冲、器件是否异常发热。
+5. 逐步降低负载，不要一步切到满功率。
+
+### P4：INV独立低功率
+
+1. PFC关闭，使用稳定、隔离、限流的直流母线。
+2. 先从低于60 V和较大每相电阻开始，实际输出线电压会随母线同比降低。
+3. 三相负载采用Y接且中性点悬浮，不接第4桥臂。
+4. 验证60 Hz相序U->V->W、三相相差120度和软启动。
+5. 运行中短按PD1，确认OLED/VOFA从60切到30 Hz，示波器波形相位连续且软启动不重新开始。
+6. 再次短按切回60 Hz；长按PD1超过1 s不得反复切换。
+7. 分别在30 Hz和60 Hz短时运行，重新观察电流和温升。
+8. 在无功率条件下暂时拔开或停止ADC3/4/5线电压采样，确认C/D/E仍持续发出10 kHz PWM、INV心跳继续增加且OLED不重启；恢复采样后仅观察原始码诊断变化。
+
+### P5：联合低功率
+
+1. PFC和INV标定分别确认，使用联合低功率阶段。
+2. 短按PD0后，C/D/E可立即从50%开始软启动；A/B是否开放不再是INV启动条件。
+3. 即使PFC没有PWM、仅靠MOS体二极管整流，也继续观察INV三相线电流；PFC若正常建立母线则可并行工作。
+4. OLED的状态号、INV调制度和两套采样心跳应持续更新；PFC状态异常不应覆盖INV运行状态。
+5. INV投入瞬间若母线明显塌陷或线电流仍不足，先增大负载阻值/降低目标，再逐步接近1.8 A，不得直接取消硬件限流。
+
+### P6：逐步接近1.8 A
+
+三相Y接、32 V RMS线电压时：
+
+```text
+Vphase_rms = 32 / sqrt(3) ≈ 18.48 V
+Rphase     = 18.48 / 1.8 ≈ 10.27 ohm
+Pout       = 3 * 18.48 * 1.8 ≈ 99.8 W
+```
+
+因此最终约1.8 A目标对应每相约10.3 ohm的对称阻性负载，每相功率约33.3 W，电阻额定功率必须留足余量。考虑损耗后，36 V输入侧电流约需3 A RMS；PFC当前5.8 A peak指令上限对应约4.10 A RMS，能够覆盖约100~120 W目标，但已接近采样与功率器件工作上沿。
+
+实际步骤：
+
+1. 从每相更大阻值开始，记录Vline、Iline、VBUS、VAC和IPFC。
+2. 逐级降低三相对称负载，每一级只短时运行并检查温升。
+3. 确认PFC输入电流没有持续削顶，母线没有随INV投入大幅塌陷。
+4. 接近10.3 ohm时使用功率分析仪测三相电流，不用软件换算代替仪器。
+5. 先完成60 Hz，再单独测试30 Hz；两种频率分别记录温升。
+
+## 10. 故障和现象排查
+
+联合故障位：
+
+| 位 | 含义 |
+| --- | --- |
+| `PFC_INV_FAULT_PFC` | PFC活动域出现致命故障 |
+| `PFC_INV_FAULT_INV` | INV活动域出现致命故障 |
+| `PFC_INV_FAULT_SEQUENCE` | 启动时五路序列未建立 |
+| `PFC_INV_FAULT_HRTIM` | HRTIM启动、Fault或Compare失败 |
+| `PFC_INV_FAULT_SYSTEM` | 系统、时钟或不可恢复HAL错误 |
+
+| 现象 | 优先检查 |
+| --- | --- |
+| OLED不亮 | PA15/PB7软件I2C、OLED供电、100 ms上电等待 |
+| OLED更新但PD0无效 | 当前是否RAW_ADC、PWM是否为0、按键是否先释放解锁 |
+| PD1短按频率不变 | 当前是否INV活动阶段、PD1是否低有效接地、是否先释放30 ms、按时是否在50~1000 ms |
+| PD1切换后OLED为30/60但实测不符 | CH3/OLED只表示软件指令，检查10 kHz INV快速路径、DDS步进和示波器测量方法 |
+| VOFA无数据 | USART2 460800、JustFloat、串口地和通道数 |
+| RAW_ADC某路为0或4095 | 采样板供电、信号悬空、接地、连接器和ADC Rank |
+| PFC有PWM但母线不上升 | 桥臂极性、VAC/IPFC极性、输入限流、负载过重、PR饱和 |
+| PFC母线快速过冲 | PI方向/参数、VBUS比例、桥臂极性，立即断电 |
+| INV有PWM但线电压不足 | 实际VBUS不是60 V、死区/驱动压降、调制度限幅 |
+| INV三相电流不平衡 | 三相负载、电感、桥臂映射、功率管状态；本版不使用INV电流ADC闭环 |
+| 联合时INV不投入 | 先检查INV确认位、PWM总许可、INV初始化和C/D/E Compare；联合启动不再以PFC是否进入VBUS_LOOP_RUN为条件 |
+| PWM约1 s后消失且OLED重新显示启动画面 | 优先判断IWDG复位：读取复位标志，检查OLED是否重新初始化；当前IWDG约0.5~1 s未刷新会复位。确认HRTIM Master REP中断和`inv_heartbeat`持续增加；ADC3/4/5采样异常本身不应再触发该复位 |
+| 反复IWDG复位但HRTIM REP心跳不增加 | 检查`HRTIM1_Master_IRQHandler`是否进工程、Master重复中断是否使能、HRTIM计数器是否运行；不能通过延长IWDG掩盖控制节拍故障 |
+| 拉低PB10后全关 | 这是预期的FLT3关断；排除原因后复位，禁止自动重启 |
+
+## 11. 升功率前的禁止条件
+
+出现任一项都禁止继续升功率：
+
+- ADC通道未完成多点标定或高量程削顶；
+- MCU互补PWM、死区和上下管映射未用示波器确认；
+- 驱动板无母线测试存在重叠、振铃或关断异常；
+- 没有隔离限流源、保险丝、放电电阻或物理断电手段；
+- 示波器接地方式不明确；
+- PFC母线过冲、输入电流严重削顶或PR长期饱和；
+- INV三相明显不平衡、母线投入时塌陷或器件快速发热；
+- PB10未接真实保护，却误认为软件放宽可以替代OCP/DESAT。
+
+## 12. 当前验证记录
+
+- Keil工程已恢复`MDK-ARM/stm32g474xx_flash.sct`，布局为Flash `0x08000000/0x40000`、RAM `0x20000000/0x20000`。
+- 当前构建结果：`0 Error(s), 0 Warning(s)`，已生成HEX。
+- 镜像大小：`Code=39048`、`RO-data=2916`、`RW-data=352`、`ZI-data=3864`。
+- 默认交付为`JOINT_CONTEST + 36 V档 + PWM=1`，但上电仍不会自动发波，必须先释放再短按PD0。
+- 本次只完成静态检查和Keil构建；ADC标定、PWM波形、带功率整流、三相逆变和1.8 A目标仍必须按第9节逐级上板验证。

@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1200" viewBox="0 0 1600 1200">
+  <defs><style>
+    .title{font:700 48px SimSun,Microsoft YaHei,sans-serif;fill:#20252b;text-anchor:middle}.sub{font:25px SimSun,Microsoft YaHei,sans-serif;fill:#68747f;text-anchor:middle}
+    .panel{fill:#f7f9fb;stroke:#c5ced6;stroke-width:3}.code{font:31px Consolas,"Courier New",SimSun,Microsoft YaHei,monospace;dominant-baseline:middle}.num{font:25px Consolas,monospace;fill:#8a96a3;text-anchor:end;dominant-baseline:middle}
+    .p{fill:#26323d}.k{fill:#1769aa;font-weight:700}.f{fill:#277a55}.i{fill:#a34b43}.e{fill:#b64b42;font-weight:700}.c{fill:#78838d;font-style:italic}.tag{font:23px SimSun,Microsoft YaHei,sans-serif;fill:#fff;text-anchor:middle;dominant-baseline:middle}
+  </style></defs>
+  <rect width="1600" height="1200" fill="#fff"/><text x="800" y="72" class="title">（2）PFC与INV联合启动</text><text x="800" y="116" class="sub">严格执行“PFC电流环 → 母线环 → VBUS稳定 → INV软启动”</text>
+  <rect x="105" y="160" width="1390" height="930" rx="20" fill="#f7f9fb" class="panel"/><rect x="105" y="160" width="1390" height="68" rx="20" fill="#344452"/><text x="800" y="194" class="tag">START_JOINT_POWER()</text>
+  <g class="num"><text x="180" y="280">01</text><text x="180" y="338">02</text><text x="180" y="396">03</text><text x="180" y="454">04</text><text x="180" y="512">05</text><text x="180" y="570">06</text><text x="180" y="628">07</text><text x="180" y="686">08</text><text x="180" y="744">09</text><text x="180" y="802">10</text><text x="180" y="860">11</text><text x="180" y="918">12</text><text x="180" y="976">13</text><text x="180" y="1034">14</text></g>
+  <g class="code">
+    <text x="230" y="280"><tspan class="k">IF</tspan><tspan class="p"> (state == READY &amp;&amp; PD0短按()) {</tspan></text>
+    <text x="280" y="338"><tspan class="f">设置Compare</tspan><tspan class="p">(A/B, 50%); </tspan><tspan class="f">开放PFC</tspan><tspan class="p">();</tspan></text>
+    <text x="280" y="396"><tspan class="f">投入PR电流环</tspan><tspan class="p">(10 kHz);</tspan></text>
+    <text x="280" y="454"><tspan class="k">IF</tspan><tspan class="p"> (!电流跟踪合格 &amp;&amp; 已超时) </tspan><tspan class="e">联合故障</tspan><tspan class="p">();</tspan></text>
+    <text x="280" y="512"><tspan class="f">切入PI母线环</tspan><tspan class="p">(1 kHz);</tspan></text>
+    <text x="280" y="570"><tspan class="c">// PI使VBUS按斜坡升至目标值，避免电流突变</tspan></text>
+    <text x="280" y="628"><tspan class="k">IF</tspan><tspan class="p"> (VBUS连续稳定(500 ms)) {</tspan></text>
+    <text x="330" y="686"><tspan class="i">设置Compare</tspan><tspan class="p">(C/D/E, 50%); </tspan><tspan class="i">开放INV</tspan><tspan class="p">();</tspan></text>
+    <text x="330" y="744"><tspan class="i">INV软启动</tspan><tspan class="p">(1 s);</tspan></text>
+    <text x="330" y="802"><tspan class="p">state = JOINT_RUN;</tspan></text>
+    <text x="280" y="860"><tspan class="k">ELSE IF</tspan><tspan class="p"> (母线建立超时) {</tspan></text>
+    <text x="330" y="918"><tspan class="e">联合故障</tspan><tspan class="p">(); </tspan><tspan class="c">// INV始终不开放</tspan></text>
+    <text x="280" y="976"><tspan class="p">}</tspan></text>
+    <text x="230" y="1034"><tspan class="p">}</tspan></text>
+  </g>
+</svg>

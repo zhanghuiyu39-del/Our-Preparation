@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1200" viewBox="0 0 1600 1200">
+  <defs><style>
+    .title{font:700 48px SimSun,Microsoft YaHei,sans-serif;fill:#20252b;text-anchor:middle}.sub{font:25px SimSun,Microsoft YaHei,sans-serif;fill:#68747f;text-anchor:middle}
+    .panel{fill:#f7f9fb;stroke:#c5ced6;stroke-width:3}.code{font:31px Consolas,"Courier New",SimSun,Microsoft YaHei,monospace;dominant-baseline:middle}.num{font:25px Consolas,monospace;fill:#8a96a3;text-anchor:end;dominant-baseline:middle}
+    .p{fill:#26323d}.k{fill:#1769aa;font-weight:700}.f{fill:#277a55}.e{fill:#b64b42;font-weight:700}.c{fill:#78838d;font-style:italic}.tag{font:23px SimSun,Microsoft YaHei,sans-serif;fill:#fff;text-anchor:middle;dominant-baseline:middle}
+  </style></defs>
+  <rect width="1600" height="1200" fill="#fff"/><text x="800" y="72" class="title">（1）系统初始化与就绪</text><text x="800" y="116" class="sub">上电后先建立采样时基，所有功率输出保持关闭</text>
+  <rect x="105" y="160" width="1390" height="930" rx="20" fill="#f7f9fb" class="panel"/><rect x="105" y="160" width="1390" height="68" rx="20" fill="#344452"/><text x="800" y="194" class="tag">INIT_AND_READY()</text>
+  <g class="num"><text x="180" y="280">01</text><text x="180" y="338">02</text><text x="180" y="396">03</text><text x="180" y="454">04</text><text x="180" y="512">05</text><text x="180" y="570">06</text><text x="180" y="628">07</text><text x="180" y="686">08</text><text x="180" y="744">09</text><text x="180" y="802">10</text><text x="180" y="860">11</text><text x="180" y="918">12</text><text x="180" y="976">13</text><text x="180" y="1034">14</text></g>
+  <g class="code">
+    <text x="230" y="280"><tspan class="k">BEGIN</tspan></text>
+    <text x="230" y="338"><tspan class="f">关闭输出</tspan><tspan class="p">(HRTIM A~E); </tspan><tspan class="c">// 上电安全状态</tspan></text>
+    <text x="230" y="396"><tspan class="f">初始化</tspan><tspan class="p">(时钟, GPIO, DMA, HRTIM, ADC1~5);</tspan></text>
+    <text x="230" y="454"><tspan class="f">初始化</tspan><tspan class="p">(联合控制, OLED, USART);</tspan></text>
+    <text x="230" y="512"><tspan class="f">校准ADC</tspan><tspan class="p">(5→4→3→2→1); </tspan><tspan class="f">配置AWD</tspan><tspan class="p">();</tspan></text>
+    <text x="230" y="570"><tspan class="f">启动循环DMA</tspan><tspan class="p">(ADC1~5);</tspan></text>
+    <text x="230" y="628"><tspan class="p">禁用Half Transfer中断; </tspan><tspan class="c">// 只处理完整帧</tspan></text>
+    <text x="230" y="686"><tspan class="f">启动计数器</tspan><tspan class="p">(Master + Timer A~E);</tspan></text>
+    <text x="230" y="744"><tspan class="c">// 此时仅产生10 kHz ADC触发，不开放PWM引脚</tspan></text>
+    <text x="230" y="802"><tspan class="k">IF</tspan><tspan class="p"> (!五路DMA有效 || !标定有效) {</tspan></text>
+    <text x="280" y="860"><tspan class="e">联合故障</tspan><tspan class="p">(); </tspan><tspan class="e">等待人工复位</tspan><tspan class="p">;</tspan></text>
+    <text x="230" y="918"><tspan class="p">}</tspan></text>
+    <text x="230" y="976"><tspan class="f">启动IWDG</tspan><tspan class="p">(); state = READY;</tspan></text>
+    <text x="230" y="1034"><tspan class="k">END</tspan><tspan class="c">  // 等待PD0有效短按</tspan></text>
+  </g>
+</svg>

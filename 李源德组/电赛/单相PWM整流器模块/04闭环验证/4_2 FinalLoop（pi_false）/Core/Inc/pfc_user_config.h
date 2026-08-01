@@ -104,7 +104,7 @@
 #define PFC_USER_5V_VBUS_TOLERANCE_V         0.50f      /* V，判定母线目标建立的±容差；调大更容易进入RUN但稳压判据变松，调小会延长RAMP或触发超时。 */
 #define PFC_USER_5V_MODULATION_LIMIT         0.90f      /* 归一化绝对值，限制桥臂电压指令；调高增加升压能力但减少占空比/死区裕量，禁止超过运行期校验上限0.95。 */
 #define PFC_USER_5V_CURRENT_TARGET_A_PEAK    0.80f      /* A peak，PI最大RMS指令约为本值/sqrt(2)=0.566 A；调高可带更重负载但必须同步保留CURRENT_TRIP裕量。 */
-#define PFC_USER_5V_CURRENT_RAMP_A_PER_S     0.50f      /* A/s，旧开环SPWM峰值指令斜率；当前PI+PR闭环启动主要使用PROBE_SLEW，本值不会改变闭环探测斜率。 */
+#define PFC_USER_5V_CURRENT_RAMP_A_PER_S     0.50f      /* A/s，旧开环SPWPFC_ControlDiagnostic.reasonM峰值指令斜率；当前PI+PR闭环启动主要使用PROBE_SLEW，本值不会改变闭环探测斜率。 */
 
 /*
  * 10 kHz PR、1 kHz PI、软启动和超时参数。整定顺序：先保持PI不投入并调PR，确认

@@ -6,8 +6,9 @@
  *
  * 数据流边界：本文件只保存编译期参数和标定结果，不访问HAL、不启动外设。
  * pfc_user_config.h与inv_user_config.h只是兼容包装，日常调试只修改本文件。
- * 默认配置是RAW_ADC且PWM=0：五路ADC、DMA、HRTIM采样触发、OLED和VOFA可以运行，
- * 但PFC A/B和INV C/D/E均不能开放。任何功率测试前必须先完成对应采样板标定。
+ * 默认配置采用已经分别完成独立验证的36 V赛题档：PD0短按后PFC尝试投入双闭环，
+ * INV同时按独立60 V开环逻辑启动。INV线电压标定只影响显示，不参与开环PWM许可。
+ * 需要重新标定ADC时，必须先把STAGE改为RAW_ADC并把PWM_ENABLE改为0U。
  */
 
 #include <stdint.h>
@@ -15,19 +16,37 @@
 /* ======================== 联合阶段：只选择一个 ======================== */
 #define PFC_INV_STAGE_RAW_ADC          (0U) /* 只看原始码，所有PWM禁止。 */
 #define PFC_INV_STAGE_PFC_ONLY         (1U) /* PFC闭环，INV保持关闭。 */
-#define PFC_INV_STAGE_INV_ONLY         (2U) /* INV开环，使用ADC1实测VBUS。 */
-#define PFC_INV_STAGE_JOINT_LOW_POWER  (3U) /* PFC先建立低压母线，再自动投入INV。 */
-#define PFC_INV_STAGE_JOINT_CONTEST    (4U) /* 36 V赛题参数骨架，必须重新标定。 */
+#define PFC_INV_STAGE_INV_ONLY         (2U) /* INV开环，线电压ADC只用于观察。 */
+#define PFC_INV_STAGE_JOINT_LOW_POWER  (3U) /* PFC可选运行，INV不等待母线闭环。 */
+#define PFC_INV_STAGE_JOINT_CONTEST    (4U) /* 36 V联合档，INV优先保持开环发波。 */
 
 #define PFC_INV_PROFILE_5V             (0U)
 #define PFC_INV_PROFILE_36V            (1U)
 
-/* 用户通常只需要修改下面四项，然后重新编译、下载。 */
-#define PFC_INV_STAGE                  PFC_INV_STAGE_RAW_ADC
-#define PFC_INV_ACTIVE_PROFILE         PFC_INV_PROFILE_5V
-#define PFC_INV_PFC_CALIBRATION_CONFIRMED 0U
-#define PFC_INV_INV_CALIBRATION_CONFIRMED 0U
-#define PFC_INV_PWM_ENABLE             0U
+/*
+ * 用户通常只修改阶段、参数档和PWM总许可。PFC标定确认按5 V/36 V参数档分别保存，
+ * 切换参数档时不会继承另一档的确认状态；INV仍使用独立确认位。
+ */
+#define PFC_INV_STAGE                  PFC_INV_STAGE_JOINT_CONTEST
+#define PFC_INV_ACTIVE_PROFILE         PFC_INV_PROFILE_36V
+#define PFC_INV_PFC_5V_CALIBRATION_CONFIRMED  1U /* 已在独立PFC工程使用同一采样链完成5 V实测。 */
+#define PFC_INV_PFC_36V_CALIBRATION_CONFIRMED 1U /* 已按当前独立PFC赛题档完成36 V带功率验证。 */
+#define PFC_INV_INV_CALIBRATION_CONFIRMED 0U /* 只表示线电压工程量是否可信，不控制PWM。 */
+#define PFC_INV_PWM_ENABLE             1U
+
+/*
+ * 1U沿用独立PFC的波形调试放宽策略：软件阈值和波形质量诊断只记录，不撤销PWM。
+ * ADC/DMA失步、HAL错误、非有限数、Compare写入失败、FLT3和CPU/时钟异常仍然停机。
+ * 没有独立OCP/DESAT时只能配合隔离、限流电源使用，不能把该开关当作硬件保护。
+ */
+#define PFC_INV_PFC_RELAXED_PWM_TEST   1U
+
+/* 旧PFC接口只读取活动档确认位；该派生宏禁止用户手工填写。 */
+#if (PFC_INV_ACTIVE_PROFILE == PFC_INV_PROFILE_5V)
+#define PFC_INV_PFC_CALIBRATION_CONFIRMED PFC_INV_PFC_5V_CALIBRATION_CONFIRMED
+#else
+#define PFC_INV_PFC_CALIBRATION_CONFIRMED PFC_INV_PFC_36V_CALIBRATION_CONFIRMED
+#endif
 
 /* 联合层低速任务周期，修改后必须同步检查IWDG超时和串口占用。 */
 #define PFC_INV_VOFA_PERIOD_MS         10U
@@ -35,7 +54,6 @@
 #define PFC_INV_SUPERVISOR_PERIOD_MS   100U
 #define PFC_INV_VBUS_STABLE_MS         500U
 #define PFC_INV_INV_SOFT_START_MS      1000U
-#define PFC_INV_VBUS_STALE_FRAMES      3U  /* INV快速路径允许连续复用旧VBUS快照的最大帧数。 */
 
 /* ======================== PFC 5 V低压试验参数 ======================== */
 #define PFC_INV_PFC_5V_VAC_NOMINAL_RMS       5.0f
@@ -49,8 +67,8 @@
 #define PFC_INV_PFC_5V_VBUS_TRIP_V           10.5f
 #define PFC_INV_PFC_5V_VBUS_TOLERANCE_V      0.5f
 #define PFC_INV_PFC_5V_LOAD_RESISTANCE_OHM   30.0f
-#define PFC_INV_PFC_5V_INPUT_INDUCTANCE_H    470.0e-6f
-#define PFC_INV_PFC_5V_BUS_CAPACITANCE_F     4700.0e-6f
+#define PFC_INV_PFC_5V_INPUT_INDUCTANCE_H    940.0e-6f
+#define PFC_INV_PFC_5V_BUS_CAPACITANCE_F     4000.0e-6f
 #define PFC_INV_PFC_5V_CONTROL_FREQUENCY_HZ  10000.0f
 #define PFC_INV_PFC_5V_MODULATION_LIMIT      0.90f
 #define PFC_INV_PFC_5V_CURRENT_TARGET_A_PEAK 0.80f
@@ -73,56 +91,63 @@
 #define PFC_INV_PFC_5V_VBUS_TIMEOUT_MS       8000U
 #define PFC_INV_PFC_5V_SATURATION_SAMPLES    200U
 
-/* 以下是占位标定值。RAW_ADC时可保持默认；确认标定前禁止闭环输出。 */
-#define PFC_INV_PFC_5V_IPFC_ZERO_COUNT      2048U
-#define PFC_INV_PFC_5V_VAC_ZERO_COUNT       2048U
-#define PFC_INV_PFC_5V_IPFC_A_PER_COUNT     0.001f
-#define PFC_INV_PFC_5V_VAC_V_PER_COUNT      0.010f
-#define PFC_INV_PFC_5V_VBUS_V_PER_COUNT     0.010f
+/*
+ * 以下参数来自独立PFC工程在同一采样板、同一电阻/电位器和同一ADC接线下的5 V实测。
+ * 首次迁移上板仍保持RAW_ADC和PWM=0，确认原始码未因供电、接地或连接器变化而漂移。
+ */
+#define PFC_INV_PFC_5V_IPFC_ZERO_COUNT      2046U
+#define PFC_INV_PFC_5V_VAC_ZERO_COUNT       2046U
+#define PFC_INV_PFC_5V_IPFC_A_PER_COUNT     0.003322f
+#define PFC_INV_PFC_5V_VAC_V_PER_COUNT      0.02730f
+#define PFC_INV_PFC_5V_VBUS_V_PER_COUNT     0.02106f
 #define PFC_INV_PFC_5V_IPFC_POLARITY        1
 #define PFC_INV_PFC_5V_VAC_POLARITY         1
 #define PFC_INV_PFC_5V_BRIDGE_POLARITY      1
 
-/* ======================== PFC 36 V赛题参数骨架 ======================== */
+/* ======================== PFC 36 V赛题实测参数 ======================== */
 #define PFC_INV_PFC_36V_VAC_NOMINAL_RMS       36.0f
 #define PFC_INV_PFC_36V_GRID_FREQUENCY_HZ     50.0f
 #define PFC_INV_PFC_36V_GRID_TOLERANCE_HZ     3.0f
-#define PFC_INV_PFC_36V_VAC_PEAK_TRIP_V       55.0f
+#define PFC_INV_PFC_36V_VAC_PEAK_TRIP_V       53.5f
 #define PFC_INV_PFC_36V_VBUS_TARGET_V         60.0f
 #define PFC_INV_PFC_36V_VBUS_START_MIN_V      45.0f
 #define PFC_INV_PFC_36V_VBUS_RUN_MIN_V        40.0f
 #define PFC_INV_PFC_36V_VBUS_WARN_V           64.0f
 #define PFC_INV_PFC_36V_VBUS_TRIP_V           66.0f
 #define PFC_INV_PFC_36V_VBUS_TOLERANCE_V      1.0f
-#define PFC_INV_PFC_36V_LOAD_RESISTANCE_OHM   32.4f
-#define PFC_INV_PFC_36V_INPUT_INDUCTANCE_H    470.0e-6f
-#define PFC_INV_PFC_36V_BUS_CAPACITANCE_F     4700.0e-6f
+#define PFC_INV_PFC_36V_LOAD_RESISTANCE_OHM   30.0f
+#define PFC_INV_PFC_36V_INPUT_INDUCTANCE_H    940.0e-6f
+#define PFC_INV_PFC_36V_BUS_CAPACITANCE_F     4000.0e-6f
 #define PFC_INV_PFC_36V_CONTROL_FREQUENCY_HZ  10000.0f
 #define PFC_INV_PFC_36V_MODULATION_LIMIT      0.90f
-#define PFC_INV_PFC_36V_CURRENT_TARGET_A_PEAK 4.80f
-#define PFC_INV_PFC_36V_CURRENT_RAMP_A_PER_S  1.00f
-#define PFC_INV_PFC_36V_CURRENT_TRIP_A_PEAK   5.20f
-#define PFC_INV_PFC_36V_PR_KP                 5.0f
-#define PFC_INV_PFC_36V_PR_KR                 20.0f
+#define PFC_INV_PFC_36V_CURRENT_TARGET_A_PEAK 5.80f
+#define PFC_INV_PFC_36V_CURRENT_RAMP_A_PER_S  2.00f
+#define PFC_INV_PFC_36V_CURRENT_TRIP_A_PEAK   6.20f
+#define PFC_INV_PFC_36V_PR_KP                 1.00f /* V/A，加强瞬时电流误差校正，防止实际电流偏离参考后继续上升。 */
+#define PFC_INV_PFC_36V_PR_KR                 8.00f /* V/A，加强50 Hz稳态跟踪，但仍保留10 V的PR输出限幅。 */
 #define PFC_INV_PFC_36V_PR_BANDWIDTH_RAD_S    5.0f
-#define PFC_INV_PFC_36V_PR_OUTPUT_LIMIT_V     80.0f
-#define PFC_INV_PFC_36V_PI_KP_A_PER_V         0.30f
-#define PFC_INV_PFC_36V_PI_KI_A_PER_VS        15.0f
+#define PFC_INV_PFC_36V_PR_OUTPUT_LIMIT_V     10.0f
+#define PFC_INV_PFC_36V_PI_KP_A_PER_V         0.05f /* A/V，降低INV投入后母线误差直接形成的电流阶跃。 */
+#define PFC_INV_PFC_36V_PI_KI_A_PER_VS        0.20f /* A/(V*s)，避免母线暂时低于60 V时在数秒内把电流指令推满。 */
 #define PFC_INV_PFC_36V_VOLTAGE_LOOP_HZ       1000.0f
 #define PFC_INV_PFC_36V_NOTCH_DAMPING_RAD_S   50.0f
 #define PFC_INV_PFC_36V_VBUS_SLEW_V_PER_S     5.0f
-#define PFC_INV_PFC_36V_PROBE_CURRENT_A_RMS   0.50f
-#define PFC_INV_PFC_36V_PROBE_SLEW_A_PER_S    10.0f
-#define PFC_INV_PFC_36V_CURRENT_ERROR_MAX_A_RMS 0.50f
-#define PFC_INV_PFC_36V_PROBE_MIN_MS          60U
-#define PFC_INV_PFC_36V_CURRENT_TIMEOUT_MS    500U
+#define PFC_INV_PFC_36V_PROBE_CURRENT_A_RMS   0.80f /* A RMS，仅为PR启动探测值；PI外环随后仍可升至约4.10 A RMS。 */
+#define PFC_INV_PFC_36V_PROBE_SLEW_A_PER_S    8.0f  /* A RMS/s，约100 ms升到0.8 A，减小单半周启动浪涌。 */
+#define PFC_INV_PFC_36V_CURRENT_ERROR_MAX_A_RMS 0.35f
+#define PFC_INV_PFC_36V_PROBE_MIN_MS          100U  /* 至少观察5个50 Hz周期后再切入母线PI。 */
+#define PFC_INV_PFC_36V_CURRENT_TIMEOUT_MS    800U
 #define PFC_INV_PFC_36V_VBUS_TIMEOUT_MS       8000U
 #define PFC_INV_PFC_36V_SATURATION_SAMPLES    200U
-#define PFC_INV_PFC_36V_IPFC_ZERO_COUNT       2048U
-#define PFC_INV_PFC_36V_VAC_ZERO_COUNT        2048U
-#define PFC_INV_PFC_36V_IPFC_A_PER_COUNT      0.001f
-#define PFC_INV_PFC_36V_VAC_V_PER_COUNT       0.020f
-#define PFC_INV_PFC_36V_VBUS_V_PER_COUNT      0.020f
+/*
+ * 以下零点、比例和极性与当前独立PFC赛题档保持一致。若更换采样板、运放电阻、
+ * 连接器或ADC引脚，必须退回RAW_ADC重新标定，不能继续沿用确认位1U。
+ */
+#define PFC_INV_PFC_36V_IPFC_ZERO_COUNT       2046U
+#define PFC_INV_PFC_36V_VAC_ZERO_COUNT        2046U
+#define PFC_INV_PFC_36V_IPFC_A_PER_COUNT      0.003323f
+#define PFC_INV_PFC_36V_VAC_V_PER_COUNT       0.02730f
+#define PFC_INV_PFC_36V_VBUS_V_PER_COUNT      0.021062f
 #define PFC_INV_PFC_36V_IPFC_POLARITY         1
 #define PFC_INV_PFC_36V_VAC_POLARITY          1
 #define PFC_INV_PFC_36V_BRIDGE_POLARITY       1
@@ -131,6 +156,10 @@
 #define PFC_INV_INV_OUTPUT_FREQUENCY       60U /* 只允许30U或60U，修改后必须重新核对采样和负载。 */
 #define PFC_INV_INV_LINE_RMS_V_5V          2.5f
 #define PFC_INV_INV_LINE_RMS_V_36V         32.0f
+#define PFC_INV_INV_CURRENT_PRIORITY_MODE  1U  /* 联合测试优先提高线电流，不等待PFC母线闭环。 */
+#define PFC_INV_INV_CURRENT_PRIORITY_LINE_RMS_V_5V  2.5f
+#define PFC_INV_INV_CURRENT_PRIORITY_LINE_RMS_V_36V 33.0f /* 60 V母线下约0.90调制度。 */
+#define PFC_INV_INV_FIXED_DC_BUS_V          60.0f /* V，INV开环固定母线；实际母线偏差会同比影响输出线电压。 */
 #define PFC_INV_INV_SOFT_START_MS          1000U
 #define PFC_INV_INV_MODULATION_LIMIT       0.90f
 #define PFC_INV_INV_MINIMUM_DC_V           2.0f
@@ -183,8 +212,9 @@
 #define PFC_USER_RUN_MODE PFC_USER_MODE_CLOSED_LOOP
 #endif
 #define PFC_USER_ACTIVE_PROFILE PFC_INV_ACTIVE_PROFILE
-#define PFC_USER_5V_CALIBRATION_CONFIRMED PFC_INV_PFC_CALIBRATION_CONFIRMED
-#define PFC_USER_36V_CALIBRATION_CONFIRMED PFC_INV_PFC_CALIBRATION_CONFIRMED
+#define PFC_USER_RELAXED_PWM_TEST PFC_INV_PFC_RELAXED_PWM_TEST
+#define PFC_USER_5V_CALIBRATION_CONFIRMED PFC_INV_PFC_5V_CALIBRATION_CONFIRMED
+#define PFC_USER_36V_CALIBRATION_CONFIRMED PFC_INV_PFC_36V_CALIBRATION_CONFIRMED
 
 #define PFC_USER_5V_VAC_NOMINAL_RMS PFC_INV_PFC_5V_VAC_NOMINAL_RMS
 #define PFC_USER_5V_GRID_FREQUENCY_HZ PFC_INV_PFC_5V_GRID_FREQUENCY_HZ
@@ -281,11 +311,12 @@
 #if (PFC_INV_STAGE == PFC_INV_STAGE_RAW_ADC)
 #define INV_USER_WORK_MODE INV_MODE_ADC_CALIBRATION
 #else
-#define INV_USER_WORK_MODE INV_MODE_OPEN_LOOP
+#define INV_USER_WORK_MODE INV_MODE_PWM_WAVEFORM
 #endif
 #define INV_USER_ENABLE_PWM_OUTPUT PFC_INV_PWM_ENABLE
+#define INV_USER_RELAXED_MONITORING PFC_INV_PFC_RELAXED_PWM_TEST
 #define INV_USER_OUTPUT_FREQUENCY PFC_INV_INV_OUTPUT_FREQUENCY
-#define INV_USER_DC_BUS_V 5.0f
+#define INV_USER_DC_BUS_V PFC_INV_INV_FIXED_DC_BUS_V
 #if (PFC_INV_ACTIVE_PROFILE == PFC_INV_PROFILE_36V)
 #define INV_USER_LINE_RMS_V PFC_INV_INV_LINE_RMS_V_36V
 #else
@@ -333,20 +364,23 @@
 #if (PFC_INV_PWM_ENABLE != 0U) && (PFC_INV_PWM_ENABLE != 1U)
 #error "PFC_INV_PWM_ENABLE must be 0U or 1U"
 #endif
-#if (PFC_INV_PFC_CALIBRATION_CONFIRMED != 0U) && (PFC_INV_PFC_CALIBRATION_CONFIRMED != 1U)
-#error "PFC calibration confirmation must be 0U or 1U"
+#if (PFC_INV_PFC_RELAXED_PWM_TEST != 0U) && (PFC_INV_PFC_RELAXED_PWM_TEST != 1U)
+#error "PFC_INV_PFC_RELAXED_PWM_TEST must be 0U or 1U"
+#endif
+#if (PFC_INV_INV_CURRENT_PRIORITY_MODE != 0U) && (PFC_INV_INV_CURRENT_PRIORITY_MODE != 1U)
+#error "PFC_INV_INV_CURRENT_PRIORITY_MODE must be 0U or 1U"
+#endif
+#if (PFC_INV_PFC_5V_CALIBRATION_CONFIRMED != 0U) && (PFC_INV_PFC_5V_CALIBRATION_CONFIRMED != 1U)
+#error "PFC 5V calibration confirmation must be 0U or 1U"
+#endif
+#if (PFC_INV_PFC_36V_CALIBRATION_CONFIRMED != 0U) && (PFC_INV_PFC_36V_CALIBRATION_CONFIRMED != 1U)
+#error "PFC 36V calibration confirmation must be 0U or 1U"
 #endif
 #if (PFC_INV_INV_CALIBRATION_CONFIRMED != 0U) && (PFC_INV_INV_CALIBRATION_CONFIRMED != 1U)
 #error "INV calibration confirmation must be 0U or 1U"
 #endif
-#if (PFC_INV_VBUS_STALE_FRAMES == 0U)
-#error "PFC_INV_VBUS_STALE_FRAMES must be greater than zero"
-#endif
-#if (PFC_INV_PWM_ENABLE == 1U) && ((PFC_INV_STAGE == PFC_INV_STAGE_PFC_ONLY) || (PFC_INV_STAGE == PFC_INV_STAGE_INV_ONLY) || (PFC_INV_STAGE == PFC_INV_STAGE_JOINT_LOW_POWER) || (PFC_INV_STAGE == PFC_INV_STAGE_JOINT_CONTEST)) && (PFC_INV_PFC_CALIBRATION_CONFIRMED != 1U)
-#error "PWM output requires confirmed PFC ADC calibration, including INV-only VBUS feedback"
-#endif
-#if (PFC_INV_PWM_ENABLE == 1U) && ((PFC_INV_STAGE == PFC_INV_STAGE_INV_ONLY) || (PFC_INV_STAGE == PFC_INV_STAGE_JOINT_LOW_POWER) || (PFC_INV_STAGE == PFC_INV_STAGE_JOINT_CONTEST)) && (PFC_INV_INV_CALIBRATION_CONFIRMED != 1U)
-#error "PWM output requires confirmed INV ADC calibration"
+#if (PFC_INV_PWM_ENABLE == 1U) && (PFC_INV_STAGE == PFC_INV_STAGE_PFC_ONLY) && (PFC_INV_PFC_CALIBRATION_CONFIRMED != 1U)
+#error "PFC-only PWM output requires confirmed PFC ADC calibration"
 #endif
 
 #endif /* PFC_INV_USER_CONFIG_H */

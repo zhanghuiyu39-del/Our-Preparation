@@ -21,6 +21,9 @@
 #define PFC_CONTROL_TWO_PI           6.28318530718f
 #define PFC_CONTROL_SQRT_TWO         1.41421356237f
 #define PFC_CONTROL_VBUS_DIV_MIN     2.0f
+/* 36 V档在|VAC|不超过额定RMS的8%时投入，避免任意相位开放全桥造成单半周浪涌。 */
+#define PFC_CONTROL_START_VAC_MIN_V  0.5f
+#define PFC_CONTROL_START_VAC_RATIO  0.08f
 
 /** @brief 100 Hz二阶IIR陷波器历史，只在1 kHz外环分支更新。 */
 typedef struct
@@ -51,6 +54,7 @@ static volatile PFC_ControlTelemetry control_telemetry; /* ISR写、快照接口
 /* 以下运行量只由10 kHz ISR写；EnterMode在关中断临界区内修改。 */
 static float control_current_rms_command = 0.0f; /* A RMS，当前内环幅值命令。 */
 static float control_vbus_reference = 0.0f;      /* V，当前外环软启动参考。 */
+static float control_last_valid_vbus = 0.0f;     /* V，放宽模式除法回退值；仅10 kHz路径更新。 */
 static float error_square_sum = 0.0f;            /* A^2，工频周期误差平方和。 */
 static uint32_t error_sample_count = 0U;          /* 当前误差RMS窗口样本数。 */
 static uint32_t error_window_samples = 200U;      /* 一工频周期对应的10 kHz样本数。 */
@@ -175,6 +179,7 @@ void PFC_Control_Reset(void)
     (void)memset(&vbus_notch, 0, sizeof(vbus_notch));
     control_current_rms_command = 0.0f;
     control_vbus_reference = 0.0f;
+    control_last_valid_vbus = 0.0f;
     error_square_sum = 0.0f;
     error_sample_count = 0U;
     current_mode_samples = 0U;
@@ -205,6 +210,31 @@ HAL_StatusTypeDef PFC_Control_EnterMode(PFC_ControlMode mode,
     {
         PFC_Control_Reset();
     }
+    else if (mode == PFC_CONTROL_PRIME)
+    {
+        /*
+         * PRIME阶段A/B输出仍关闭，只让10 kHz路径把VAC/VBUS前馈写入预装载寄存器。
+         * 电流指令和PR历史保持为0，等新的正向过零到来后再由应用层开放输出。
+         */
+        PI_Reset(&voltage_pi);
+        PR_Reset(&current_pr);
+        control_current_rms_command = 0.0f;
+        control_vbus_reference = measurement->vbus;
+        error_square_sum = 0.0f;
+        error_sample_count = 0U;
+        current_mode_samples = 0U;
+        outer_divider = 0U;
+        saturation_count = 0U;
+        control_telemetry.current_loop_qualified = 0U;
+        control_telemetry.vbus_reference_reached = 0U;
+        control_telemetry.fault_bits = 0U;
+        control_telemetry.mode = mode;
+        control_telemetry.prime_start_cross_sequence =
+            measurement->vac_zero_cross_sequence;
+        control_telemetry.prime_waiting = 1U;
+        control_telemetry.startup_modulation = 0.0f;
+        control_telemetry.healthy = 1U;
+    }
     else if (mode == PFC_CONTROL_CURRENT_RAMP)
     {
         PI_Reset(&voltage_pi);
@@ -212,6 +242,18 @@ HAL_StatusTypeDef PFC_Control_EnterMode(PFC_ControlMode mode,
         PFC_ControlNotchPreset(measurement->vbus);
         control_current_rms_command = 0.0f;
         control_vbus_reference = measurement->vbus;
+        if ((measurement->vbus > PFC_CONTROL_VBUS_DIV_MIN) &&
+            (PFC_ControlFloatValid(measurement->vbus) != 0U))
+        {
+            control_last_valid_vbus = measurement->vbus;
+        }
+#if PFC_USER_RELAXED_PWM_TEST != 0U
+        else
+        {
+            control_last_valid_vbus = control_params->vbus_target;
+            control_vbus_reference = control_last_valid_vbus;
+        }
+#endif
         error_square_sum = 0.0f;
         error_sample_count = 0U;
         current_mode_samples = 0U;
@@ -264,16 +306,85 @@ HAL_StatusTypeDef PFC_Control_Step10k(const PFC_Measurement *measurement)
     float pr_output;
     float bridge_voltage_reference;
     float modulation;
+    float vbus_for_control;
     float ramp_step;
     uint8_t saturated;
 
     if ((control_initialized == 0U) || (control_params == 0) ||
-        (measurement == 0) || (measurement->valid == 0U) ||
-        (current_pr.initialized == 0U) || (voltage_pi.initialized == 0U) ||
+        (measurement == 0) || (measurement->valid == 0U))
+    {
+        return PFC_ControlFail(PFC_FAULT_CONTROL);
+    }
+
+    if (control_telemetry.mode == PFC_CONTROL_PRIME)
+    {
+        float start_vac_window = control_params->vac_nominal_rms *
+                                 PFC_CONTROL_START_VAC_RATIO;
+
+        if (start_vac_window < PFC_CONTROL_START_VAC_MIN_V)
+        {
+            start_vac_window = PFC_CONTROL_START_VAC_MIN_V;
+        }
+        vbus_for_control = measurement->vbus;
+        if ((PFC_ControlFloatValid(vbus_for_control) == 0U) ||
+            (vbus_for_control <= PFC_CONTROL_VBUS_DIV_MIN))
+        {
+            /* 没有真实母线除数时继续等待，绝不使用60 V目标值伪造首周期前馈。 */
+            control_telemetry.prime_waiting = 1U;
+            control_telemetry.startup_modulation = 0.0f;
+            control_telemetry.fast_heartbeat++;
+            control_telemetry.healthy = 1U;
+            return HAL_OK;
+        }
+
+        control_last_valid_vbus = vbus_for_control;
+        modulation = (float)control_params->bridge_polarity *
+                     measurement->vac / vbus_for_control;
+        if ((PFC_ControlFloatValid(modulation) == 0U) ||
+            (SPWM_ApplyModulation(modulation) != HAL_OK))
+        {
+            return PFC_ControlFail(PFC_FAULT_CONTROL | PFC_FAULT_MODULATION);
+        }
+
+        control_telemetry.vbus_reference = vbus_for_control;
+        control_telemetry.vbus_filtered = vbus_for_control;
+        control_telemetry.current_rms_command = 0.0f;
+        control_telemetry.current_reference = 0.0f;
+        control_telemetry.current_error = -measurement->ipfc;
+        control_telemetry.pr_output_v = 0.0f;
+        control_telemetry.modulation = SPWM_GetModulation();
+        control_telemetry.startup_modulation = SPWM_GetModulation();
+        control_telemetry.prime_waiting =
+            (uint8_t)(((measurement->vac_locked != 0U) &&
+                       (measurement->vac_zero_cross_sequence !=
+                        control_telemetry.prime_start_cross_sequence) &&
+                       (fabsf(measurement->vac) <= start_vac_window)) ? 0U : 1U);
+        control_telemetry.fast_heartbeat++;
+        control_telemetry.healthy = 1U;
+        return HAL_OK;
+    }
+
+    if ((current_pr.initialized == 0U) || (voltage_pi.initialized == 0U) ||
         (control_telemetry.mode == PFC_CONTROL_IDLE) ||
         (control_telemetry.mode > PFC_CONTROL_VBUS_RUN))
     {
         return PFC_ControlFail(PFC_FAULT_CONTROL);
+    }
+
+    vbus_for_control = measurement->vbus;
+    if ((PFC_ControlFloatValid(vbus_for_control) != 0U) &&
+        (vbus_for_control > PFC_CONTROL_VBUS_DIV_MIN))
+    {
+        control_last_valid_vbus = vbus_for_control;
+    }
+    else
+    {
+#if PFC_USER_RELAXED_PWM_TEST != 0U
+        vbus_for_control = (control_last_valid_vbus > PFC_CONTROL_VBUS_DIV_MIN) ?
+                           control_last_valid_vbus : control_params->vbus_target;
+#else
+        return PFC_ControlFail(PFC_FAULT_CONTROL);
+#endif
     }
 
     if (control_telemetry.mode == PFC_CONTROL_CURRENT_RAMP)
@@ -291,7 +402,7 @@ HAL_StatusTypeDef PFC_Control_Step10k(const PFC_Measurement *measurement)
     {
         float vbus_filtered;
         outer_divider = 0U;
-        vbus_filtered = PFC_ControlNotchStep(measurement->vbus);
+        vbus_filtered = PFC_ControlNotchStep(vbus_for_control);
         if (PFC_ControlFloatValid(vbus_filtered) == 0U)
         {
             return PFC_ControlFail(PFC_FAULT_CONTROL);
@@ -323,8 +434,7 @@ HAL_StatusTypeDef PFC_Control_Step10k(const PFC_Measurement *measurement)
     current_error = current_reference - measurement->ipfc;
     pr_output = PR_Calc(&current_pr, current_reference, measurement->ipfc);
     bridge_voltage_reference = measurement->vac - pr_output;
-    if ((measurement->vbus <= PFC_CONTROL_VBUS_DIV_MIN) ||
-        (PFC_ControlFloatValid(current_reference) == 0U) ||
+    if ((PFC_ControlFloatValid(current_reference) == 0U) ||
         (PFC_ControlFloatValid(current_error) == 0U) ||
         (PFC_ControlFloatValid(current_pr.raw_output) == 0U) ||
         (PFC_ControlFloatValid(pr_output) == 0U) ||
@@ -334,7 +444,7 @@ HAL_StatusTypeDef PFC_Control_Step10k(const PFC_Measurement *measurement)
     }
 
     modulation = (float)control_params->bridge_polarity *
-                 bridge_voltage_reference / measurement->vbus;
+                 bridge_voltage_reference / vbus_for_control;
     if ((PFC_ControlFloatValid(modulation) == 0U) ||
         (SPWM_ApplyModulation(modulation) != HAL_OK))
     {
@@ -371,7 +481,11 @@ HAL_StatusTypeDef PFC_Control_Step10k(const PFC_Measurement *measurement)
         }
         if (saturation_count >= control_params->saturation_trip_samples)
         {
+#if PFC_USER_RELAXED_PWM_TEST == 0U
             return PFC_ControlFail(PFC_FAULT_CONTROL_SATURATION);
+#else
+            saturation_count = control_params->saturation_trip_samples;
+#endif
         }
     }
     else
@@ -382,7 +496,7 @@ HAL_StatusTypeDef PFC_Control_Step10k(const PFC_Measurement *measurement)
     control_telemetry.vbus_reference = control_vbus_reference;
     if (control_telemetry.mode == PFC_CONTROL_CURRENT_RAMP)
     {
-        control_telemetry.vbus_filtered = measurement->vbus;
+        control_telemetry.vbus_filtered = vbus_for_control;
     }
     control_telemetry.current_rms_command = control_current_rms_command;
     control_telemetry.current_reference = current_reference;

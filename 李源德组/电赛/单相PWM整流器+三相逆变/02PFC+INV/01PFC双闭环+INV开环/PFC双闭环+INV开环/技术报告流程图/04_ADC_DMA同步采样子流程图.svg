@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2200" height="1200" viewBox="0 0 2200 1200">
+  <defs>
+    <style>
+      .title{font:700 50px SimSun,Microsoft YaHei,sans-serif;fill:#20252b}.sub{font:27px SimSun,Microsoft YaHei,sans-serif;fill:#59636e}
+      .box{stroke:#343a40;stroke-width:3;rx:16;ry:16}.txt{font:28px SimSun,Microsoft YaHei,sans-serif;fill:#20252b;text-anchor:middle;dominant-baseline:middle}
+      .small{font:23px SimSun,Microsoft YaHei,sans-serif;fill:#343a40;text-anchor:middle}.arr{fill:none;stroke:#3d4650;stroke-width:4;marker-end:url(#a)}
+      .blue{fill:#dceaf5}.green{fill:#dce9dc}.gray{fill:#eef2f5}.yellow{fill:#f5edcf}
+    </style>
+    <marker id="a" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0 0L12 6L0 12Z" fill="#3d4650"/></marker>
+  </defs>
+  <rect width="2200" height="1200" fill="#fff"/>
+  <text x="1100" y="75" class="title" text-anchor="middle">ADC + DMA同步采样与数据所有权</text>
+  <text x="1100" y="118" class="sub" text-anchor="middle">HRTIM统一时基，完整DMA帧发布快照；高频中断不执行显示和阻塞通信</text>
+
+  <rect x="80" y="180" width="360" height="120" class="box gray"/>
+  <text x="260" y="225" class="txt"><tspan x="260">HRTIM Master CMP2</tspan><tspan x="260" dy="38">10 kHz周期边界</tspan></text>
+  <path d="M440 240H515" class="arr"/>
+  <rect x="515" y="170" width="430" height="140" class="box blue"/>
+  <text x="730" y="215" class="txt"><tspan x="730">Trigger 1</tspan><tspan x="730" dy="38">ADC1 + ADC2</tspan></text>
+  <path d="M945 240H1020" class="arr"/>
+  <rect x="1020" y="155" width="470" height="170" class="box blue"/>
+  <text x="1255" y="195" class="small"><tspan x="1255">ADC1 Rank1 IPFC / Rank2 VBUS</tspan><tspan x="1255" dy="36">ADC2 Rank1 VAC</tspan><tspan x="1255" dy="36">DMA1 Ch1 / Ch2循环</tspan><tspan x="1255" dy="36">完整帧后发布PFC快照</tspan></text>
+  <path d="M1490 240H1560" class="arr"/>
+  <rect x="1560" y="180" width="500" height="120" class="box green"/>
+  <text x="1810" y="225" class="txt"><tspan x="1810">ADC1完整回调</tspan><tspan x="1810" dy="38">进入PFC 10 kHz控制</tspan></text>
+
+  <path d="M730 310V480" class="arr"/>
+  <rect x="515" y="480" width="430" height="140" class="box blue"/>
+  <text x="730" y="525" class="txt"><tspan x="730">Trigger 2</tspan><tspan x="730" dy="38">ADC3 + ADC4 + ADC5</tspan></text>
+  <path d="M945 550H1020" class="arr"/>
+  <rect x="1020" y="430" width="470" height="240" class="box blue"/>
+  <text x="1255" y="470" class="small"><tspan x="1255">ADC3：IU / VUV</tspan><tspan x="1255" dy="36">ADC4：IV / VVW</tspan><tspan x="1255" dy="36">ADC5：IW / VWU</tspan><tspan x="1255" dy="36">DMA2 Ch1 / Ch2 / Ch3循环</tspan><tspan x="1255" dy="36">三路序列全部前进后发布INV快照</tspan><tspan x="1255" dy="36">只执行一次INV控制</tspan></text>
+  <path d="M1490 550H1560" class="arr"/>
+  <rect x="1560" y="480" width="500" height="140" class="box green"/>
+  <text x="1810" y="525" class="txt"><tspan x="1810">ADC3/4/5完整帧回调</tspan><tspan x="1810" dy="38">进入INV 10 kHz控制</tspan></text>
+
+  <rect x="90" y="760" width="500" height="150" class="box yellow"/>
+  <text x="340" y="805" class="txt"><tspan x="340">DMA原始数组</tspan><tspan x="340" dy="38">只允许HAL/DMA写入</tspan><tspan x="340" dy="38">禁止显示模块直接读取</tspan></text>
+  <path d="M590 835H670" class="arr"/>
+  <rect x="670" y="760" width="500" height="150" class="box green"/>
+  <text x="920" y="805" class="txt"><tspan x="920">一致性快照</tspan><tspan x="920" dy="38">ISR完成整帧后发布</tspan><tspan x="920" dy="38">主循环只复制已发布数据</tspan></text>
+  <path d="M1170 835H1250" class="arr"/>
+  <rect x="1250" y="760" width="430" height="150" class="box gray"/>
+  <text x="1465" y="805" class="txt"><tspan x="1465">OLED：每100 ms</tspan><tspan x="1465" dy="38">VOFA：每10 ms</tspan><tspan x="1465" dy="38">主循环阻塞发送</tspan></text>
+  <path d="M1680 835H1760" class="arr"/>
+  <rect x="1760" y="760" width="360" height="150" class="box gray"/>
+  <text x="1940" y="805" class="txt"><tspan x="1940">Keil Watch</tspan><tspan x="1940" dy="38">趋势与状态观察</tspan><tspan x="1940" dy="38">暂停会停止实时控制</tspan></text>
+
+  <rect x="90" y="1010" width="2020" height="110" rx="18" fill="#f7e6e3" stroke="#c9574c" stroke-width="2"/>
+  <text x="1100" y="1065" class="txt">ISR禁止：OLED、阻塞USART、HAL_Delay()、浮点格式化和长循环；Half Transfer不进入业务控制路径</text>
+</svg>

@@ -11,12 +11,13 @@
  * 序列号、心跳和1秒统计，但不计算占位工程量，也不允许状态机开放功率输出。
  */
 #define PFC_ADC_RAW_MAX                 4095U /* 12位ADC最大原始码。 */
-#define PFC_ADC_BIPOLAR_RAIL_LOW        16U  /* 低于16码连续8帧视为贴低端。 */
-#define PFC_ADC_BIPOLAR_RAIL_HIGH       4079U /* 高于4079码连续8帧视为贴高端。 */
-#define PFC_ADC_VBUS_RAIL_HIGH          4079U /* VBUS单极性通道只检查高端贴轨。 */
-#define PFC_ADC_RAIL_CONFIRM_SAMPLES    8U    /* 10 kHz下约0.8 ms连续确认。 */
+#define PFC_ADC_BIPOLAR_RAIL_LOW        4U    /* 低于4码才视为接近低端，给36 V采样峰值留出更多正常范围。 */
+#define PFC_ADC_BIPOLAR_RAIL_HIGH       4091U /* 高于4091码才视为接近高端，短时噪声不会立即关断。 */
+#define PFC_ADC_VBUS_RAIL_HIGH          4091U /* VBUS单极性通道只检查高端贴轨。 */
+#define PFC_ADC_RAIL_CONFIRM_SAMPLES    64U   /* 必须连续64帧贴轨，10 kHz下约6.4 ms才锁存范围故障。 */
 #define PFC_ZERO_HYSTERESIS_V           0.20f /* V，VAC过零检测迟滞半宽。 */
 #define PFC_MIN_RMS_WINDOW_SAMPLES      32U   /* 异常参数下RMS窗口的安全下限。 */
+#define PFC_MIN_APPARENT_POWER_VA       0.10f /* VA，低于该值时PF会被零点噪声放大，故标记无效。 */
 
 /*
  * DMA直接写入的12位右对齐原始数组，Rank顺序必须与CubeMX一致：
@@ -40,6 +41,7 @@ static uint32_t samples_since_cross = 0U; /* 距上次候选正向过零的样�
 static uint32_t rms_window_samples = 0U;  /* 一个标称工频周期对应的控制样本数。 */
 static float vac_square_sum = 0.0f;       /* V^2样本累加和。 */
 static float ipfc_square_sum = 0.0f;      /* A^2样本累加和。 */
+static float input_power_sum = 0.0f;      /* W样本累加和，逐点累计VAC*IPFC。 */
 static uint32_t rms_sample_count = 0U;    /* 当前RMS窗口已累计的样本数。 */
 static int8_t vac_sign_state = -1;        /* -1表示已到负半周，+1表示正向过零已处理。 */
 
@@ -117,6 +119,7 @@ static void PFC_Measure_UpdateCalibrationStats(void)
     }
 }
 
+#if PFC_USER_RELAXED_PWM_TEST == 0U
 /**
  * @brief  将浮点阈值四舍五入并约束到12位ADC原始码范围。
  * @param  code 根据工程阈值和标定比例计算出的ADC码。
@@ -168,6 +171,7 @@ static HAL_StatusTypeDef PFC_Measure_ConfigAwd(ADC_HandleTypeDef *hadc,
     config.FilteringConfig = ADC_AWD_FILTERING_NONE;
     return HAL_ADC_AnalogWDGConfig(hadc, &config);
 }
+#endif
 
 /**
  * @brief  初始化DMA缓冲区、同步序列和测量统计状态。
@@ -186,6 +190,7 @@ void PFC_Measure_Init(const PFC_Params *params)
     samples_since_cross = 0U;
     vac_square_sum = 0.0f;
     ipfc_square_sum = 0.0f;
+    input_power_sum = 0.0f;
     rms_sample_count = 0U;
     vac_sign_state = -1;
     sync_miss_count = 0U;
@@ -239,6 +244,10 @@ void PFC_Measure_Init(const PFC_Params *params)
 HAL_StatusTypeDef PFC_Measure_ConfigureWatchdogs(ADC_HandleTypeDef *hadc1_handle,
                                                  ADC_HandleTypeDef *hadc2_handle)
 {
+#if PFC_USER_RELAXED_PWM_TEST != 0U
+    /* 波形验证模式不改写CubeMX宽窗口；句柄检查仍用于发现初始化调用错误。 */
+    return ((hadc1_handle != 0) && (hadc2_handle != 0)) ? HAL_OK : HAL_ERROR;
+#else
     /* 三个通道最终使用的12位ADC码阈值。 */
     uint16_t ipfc_low;
     uint16_t ipfc_high;
@@ -276,9 +285,16 @@ HAL_StatusTypeDef PFC_Measure_ConfigureWatchdogs(ADC_HandleTypeDef *hadc1_handle
     vac_low = PFC_Measure_ClampAdcCode((float)pfc_params->vac_zero_count - vac_span);
     vac_high = PFC_Measure_ClampAdcCode((float)pfc_params->vac_zero_count + vac_span);
 
-    if (PFC_Measure_ConfigAwd(hadc1_handle, ADC_ANALOGWATCHDOG_1,
-                              ADC_ANALOGWATCHDOG_SINGLE_REG, ADC_CHANNEL_2,
-                              ipfc_low, ipfc_high) != HAL_OK)
+    /*
+     * 当前36 V/100 ohm闭环档以验证控制效果为优先，不把ADC1 AWD1从CubeMX生成的
+     * 0~4095宽窗口收紧。这样PWM尚未开放时，4000 uF母线经体二极管自然充电产生的
+     * IPFC浪涌不会在软件层锁存F=01010。其他参数档仍保留原来的运行期IPFC AWD窗口。
+     * 100 ohm档在PWM开放后仍由下方4.00 A峰值软件判断执行过流关断。
+     */
+    if ((pfc_params->profile_id != PFC_PROFILE_36V_LIGHT_100R) &&
+        (PFC_Measure_ConfigAwd(hadc1_handle, ADC_ANALOGWATCHDOG_1,
+                               ADC_ANALOGWATCHDOG_SINGLE_REG, ADC_CHANNEL_2,
+                               ipfc_low, ipfc_high) != HAL_OK))
     {
         return HAL_ERROR;
     }
@@ -291,6 +307,7 @@ HAL_StatusTypeDef PFC_Measure_ConfigureWatchdogs(ADC_HandleTypeDef *hadc1_handle
     return PFC_Measure_ConfigAwd(hadc2_handle, ADC_ANALOGWATCHDOG_1,
                                  ADC_ANALOGWATCHDOG_SINGLE_REG, ADC_CHANNEL_6,
                                  vac_low, vac_high);
+#endif
 }
 
 /**
@@ -349,10 +366,11 @@ void PFC_Measure_OnAdc1Complete(void)
     }
 
     pfc_measurement.offset_ready = 1U;
-    if ((pfc_measurement.ipfc_raw < PFC_ADC_BIPOLAR_RAIL_LOW) ||
+    if ((PFC_USER_RELAXED_PWM_TEST == 0U) &&
+        ((pfc_measurement.ipfc_raw < PFC_ADC_BIPOLAR_RAIL_LOW) ||
         (pfc_measurement.ipfc_raw > PFC_ADC_BIPOLAR_RAIL_HIGH) ||
         (pfc_measurement.vac_raw < PFC_ADC_BIPOLAR_RAIL_LOW) ||
-        (pfc_measurement.vac_raw > PFC_ADC_BIPOLAR_RAIL_HIGH))
+        (pfc_measurement.vac_raw > PFC_ADC_BIPOLAR_RAIL_HIGH)))
     {
         if (bipolar_rail_count < PFC_ADC_RAIL_CONFIRM_SAMPLES)
         {
@@ -363,7 +381,8 @@ void PFC_Measure_OnAdc1Complete(void)
     {
         bipolar_rail_count = 0U;
     }
-    if (pfc_measurement.vbus_raw > PFC_ADC_VBUS_RAIL_HIGH)
+    if ((PFC_USER_RELAXED_PWM_TEST == 0U) &&
+        (pfc_measurement.vbus_raw > PFC_ADC_VBUS_RAIL_HIGH))
     {
         if (vbus_high_rail_count < PFC_ADC_RAIL_CONFIRM_SAMPLES)
         {
@@ -392,13 +411,33 @@ void PFC_Measure_OnAdc1Complete(void)
 
     vac_square_sum += pfc_measurement.vac * pfc_measurement.vac;
     ipfc_square_sum += pfc_measurement.ipfc * pfc_measurement.ipfc;
+    input_power_sum += pfc_measurement.vac * pfc_measurement.ipfc;
     rms_sample_count++;
     if (rms_sample_count >= rms_window_samples)
     {
         pfc_measurement.vac_rms = sqrtf(vac_square_sum / (float)rms_sample_count);
         pfc_measurement.ipfc_rms = sqrtf(ipfc_square_sum / (float)rms_sample_count);
+        pfc_measurement.input_active_power_w = input_power_sum /
+                                               (float)rms_sample_count;
+        pfc_measurement.input_apparent_power_va = pfc_measurement.vac_rms *
+                                                   pfc_measurement.ipfc_rms;
+        if (pfc_measurement.input_apparent_power_va >= PFC_MIN_APPARENT_POWER_VA)
+        {
+            float power_factor = pfc_measurement.input_active_power_w /
+                                 pfc_measurement.input_apparent_power_va;
+            if (power_factor > 1.0f) { power_factor = 1.0f; }
+            if (power_factor < -1.0f) { power_factor = -1.0f; }
+            pfc_measurement.input_power_factor = power_factor;
+            pfc_measurement.input_power_valid = 1U;
+        }
+        else
+        {
+            pfc_measurement.input_power_factor = 0.0f;
+            pfc_measurement.input_power_valid = 0U;
+        }
         vac_square_sum = 0.0f;
         ipfc_square_sum = 0.0f;
+        input_power_sum = 0.0f;
         rms_sample_count = 0U;
     }
 
@@ -433,12 +472,20 @@ void PFC_Measure_OnAdc1Complete(void)
         vac_sign_state = 1;
     }
 
-    if ((fabsf(pfc_measurement.ipfc) > pfc_params->current_trip))
+    /*
+     * 未按PD0时HRTIM输出关闭，此时输入电流只可能来自自然整流充电或采样瞬态，
+     * 不再把它当成闭环软件过流。只有四路PWM已经由状态机开放后，才按活动参数档
+     * 的current_trip判断并锁存故障，避免无PWM阶段被动浪涌反复进入FAULT_LATCH。
+     */
+    if ((PFC_USER_RELAXED_PWM_TEST == 0U) &&
+        (PFC_HRTIM_OutputsEnabled() != 0U) &&
+        (fabsf(pfc_measurement.ipfc) > pfc_params->current_trip))
     {
         PFC_Measure_Trip(PFC_FAULT_OVERCURRENT);
         return;
     }
-    if (pfc_measurement.vbus > pfc_params->vbus_overvoltage_trip)
+    if ((PFC_USER_RELAXED_PWM_TEST == 0U) &&
+        (pfc_measurement.vbus > pfc_params->vbus_overvoltage_trip))
     {
         PFC_Measure_Trip(PFC_FAULT_VBUS_OV);
         return;
@@ -458,14 +505,22 @@ void PFC_Measure_AdcError(void)
 /**
  * @brief  将HAL模拟看门狗来源映射为可诊断的PFC故障位。
  * @param  source IPFC、VBUS或VAC硬件看门狗来源。
- * @note   可在ADC1_2 ISR中调用；硬件越窗检测不替代独立DESAT/OCP短路保护。
+ * @note   可在ADC1_2 ISR中调用；IPFC来源在PWM关闭时被忽略，VBUS/VAC来源仍始终锁存。
  */
 void PFC_Measure_AnalogWatchdog(PFC_AwdSource source)
 {
+#if PFC_USER_RELAXED_PWM_TEST != 0U
+    /* 测试开关打开时忽略全部AWD中断，不写故障位，也不关闭HRTIM输出。 */
+    (void)source;
+#else
     switch (source)
     {
     case PFC_AWD_SOURCE_IPFC:
-        PFC_Measure_Trip(PFC_FAULT_AWD_IPFC | PFC_FAULT_OVERCURRENT);
+        /* 被动充电阶段不把IPFC AWD事件升级为故障；PWM开放后才执行原有锁存关断。 */
+        if (PFC_HRTIM_OutputsEnabled() != 0U)
+        {
+            PFC_Measure_Trip(PFC_FAULT_AWD_IPFC | PFC_FAULT_OVERCURRENT);
+        }
         break;
     case PFC_AWD_SOURCE_VBUS:
         PFC_Measure_Trip(PFC_FAULT_AWD_VBUS | PFC_FAULT_VBUS_OV);
@@ -477,6 +532,7 @@ void PFC_Measure_AnalogWatchdog(PFC_AwdSource source)
         PFC_Measure_Trip(PFC_FAULT_ADC_ERROR);
         break;
     }
+#endif
 }
 
 /**

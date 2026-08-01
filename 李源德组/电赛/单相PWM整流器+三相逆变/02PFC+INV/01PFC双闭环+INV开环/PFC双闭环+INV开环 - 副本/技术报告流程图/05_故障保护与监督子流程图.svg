@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2200" height="1200" viewBox="0 0 2200 1200">
+  <defs>
+    <style>
+      .title{font:700 50px SimSun,Microsoft YaHei,sans-serif;fill:#20252b}.sub{font:27px SimSun,Microsoft YaHei,sans-serif;fill:#59636e}
+      .box{stroke:#343a40;stroke-width:3;rx:16;ry:16}.txt{font:28px SimSun,Microsoft YaHei,sans-serif;fill:#20252b;text-anchor:middle;dominant-baseline:middle}
+      .small{font:23px SimSun,Microsoft YaHei,sans-serif;fill:#343a40;text-anchor:middle}.arr{fill:none;stroke:#3d4650;stroke-width:4;marker-end:url(#a)}
+      .fault{fill:none;stroke:#c9574c;stroke-width:5;marker-end:url(#r)}.red{fill:#f3d8d4}.yellow{fill:#f5edcf}.gray{fill:#eef2f5}.green{fill:#dce9dc}
+    </style>
+    <marker id="a" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0 0L12 6L0 12Z" fill="#3d4650"/></marker>
+    <marker id="r" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0 0L12 6L0 12Z" fill="#c9574c"/></marker>
+  </defs>
+  <rect width="2200" height="1200" fill="#fff"/>
+  <text x="1100" y="75" class="title" text-anchor="middle">联合故障保护与IWDG监督流程</text>
+  <text x="1100" y="118" class="sub" text-anchor="middle">任一活动域故障统一关闭A～E；普通停机不进入故障锁存</text>
+
+  <rect x="80" y="180" width="340" height="130" class="box red"/>
+  <text x="250" y="225" class="small"><tspan x="250">PB10 / HRTIM FLT3</tspan><tspan x="250" dy="34">CSS、NMI、HardFault</tspan><tspan x="250" dy="34">不可恢复HAL错误</tspan></text>
+  <rect x="470" y="180" width="340" height="130" class="box red"/>
+  <text x="640" y="225" class="small"><tspan x="640">ADC/AWD越窗</tspan><tspan x="640" dy="34">DMA失步或停滞</tspan><tspan x="640" dy="34">原始码持续贴轨</tspan></text>
+  <rect x="860" y="180" width="340" height="130" class="box red"/>
+  <text x="1030" y="225" class="small"><tspan x="1030">VBUS欠压、过压</tspan><tspan x="1030" dy="34">VBUS快照过期</tspan><tspan x="1030" dy="34">VAC同步丢失</tspan></text>
+  <rect x="1250" y="180" width="340" height="130" class="box red"/>
+  <text x="1420" y="225" class="small"><tspan x="1420">PR/PI/CBSVPWM异常</tspan><tspan x="1420" dy="34">持续限幅或非有限数</tspan><tspan x="1420" dy="34">Compare写入失败</tspan></text>
+  <rect x="1640" y="180" width="480" height="130" class="box red"/>
+  <text x="1880" y="225" class="small"><tspan x="1880">100 ms监督失败</tspan><tspan x="1880" dy="34">活动ADC序列或控制心跳停止</tspan><tspan x="1880" dy="34">输出状态与联合状态不一致</tspan></text>
+
+  <path d="M250 310V390H1100" class="fault"/><path d="M640 310V390H1100" class="fault"/><path d="M1030 310V390H1100" class="fault"/><path d="M1420 310V390H1100" class="fault"/><path d="M1880 310V390H1100" class="fault"/>
+  <rect x="780" y="390" width="640" height="130" class="box red"/>
+  <text x="1100" y="435" class="txt"><tspan x="1100">统一故障入口 PFC_INV_AppTrip()</tspan><tspan x="1100" dy="40">寄存器级关闭HRTIM A～E输出</tspan></text>
+  <path d="M1100 520V585" class="fault"/>
+
+  <rect x="160" y="585" width="430" height="145" class="box red"/>
+  <text x="375" y="625" class="small"><tspan x="375">锁存三级故障码</tspan><tspan x="375" dy="34">联合层 / PFC层 / INV层</tspan><tspan x="375" dy="34">保存首个及组合故障来源</tspan></text>
+  <rect x="690" y="585" width="430" height="145" class="box red"/>
+  <text x="905" y="625" class="small"><tspan x="905">复位控制状态</tspan><tspan x="905" dy="34">PI、PR、SPWM、CBSVPWM</tspan><tspan x="905" dy="34">DDS及软启动回到安全值</tspan></text>
+  <rect x="1220" y="585" width="430" height="145" class="box red"/>
+  <text x="1435" y="625" class="small"><tspan x="1435">进入FAULT_LATCH</tspan><tspan x="1435" dy="34">禁止PD0重新启动</tspan><tspan x="1435" dy="34">禁止自动恢复功率级</tspan></text>
+  <rect x="1750" y="585" width="370" height="145" class="box red"/>
+  <text x="1935" y="625" class="small"><tspan x="1935">停止刷新IWDG</tspan><tspan x="1935" dy="34">约500 ms后复位</tspan><tspan x="1935" dy="34">或人工断电复位</tspan></text>
+  <path d="M1100 520V550H375V585" class="fault"/><path d="M1100 520V585" class="fault"/><path d="M1100 550H1435V585" class="fault"/><path d="M1435 550H1935V585" class="fault"/>
+
+  <polygon points="1100,805 1320,895 1100,985 880,895" class="yellow" stroke="#343a40" stroke-width="3"/>
+  <text x="1100" y="882" class="txt"><tspan x="1100">故障原因已排除</tspan><tspan x="1100" dy="38">且重新完成上电检查？</tspan></text>
+  <path d="M1435 730V780H1100V805" class="fault"/>
+  <text x="1360" y="880" class="small">是</text>
+  <path d="M1320 895H1480" class="arr"/>
+  <rect x="1480" y="830" width="520" height="130" class="box gray"/>
+  <text x="1740" y="875" class="txt"><tspan x="1740">人工断电 / 复位</tspan><tspan x="1740" dy="38">从安全初始化重新开始</tspan></text>
+  <text x="1100" y="1025" class="small">否：保持锁存，不允许带故障运行</text>
+
+  <rect x="100" y="1035" width="700" height="100" class="box green"/>
+  <text x="450" y="1085" class="txt">正常PD0停机：关闭输出但不锁存故障</text>
+  <rect x="1400" y="1035" width="700" height="100" class="box" fill="#f8fafb"/>
+  <text x="1750" y="1070" class="small"><tspan x="1750">PB10外部未接真实OCP/DESAT时</tspan><tspan x="1750" dy="34">软件保护不能替代微秒级硬件短路保护</tspan></text>
+</svg>

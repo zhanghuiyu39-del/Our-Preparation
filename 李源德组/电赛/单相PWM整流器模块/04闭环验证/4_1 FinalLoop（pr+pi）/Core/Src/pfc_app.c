@@ -1,5 +1,4 @@
 #include "pfc_app.h"
-#include "SPWM.h"
 #include "pfc_control.h"
 #include "pfc_hrtim.h"
 #include "main.h"
@@ -22,18 +21,20 @@
 #define PFC_KEY_SHORT_MAX_MS            1000U /* 有效短按的最长稳定按下时间，单位ms。 */
 
 /* 状态迁移等待时间，单位ms；只由PFC_AppTick1ms()使用。 */
-#define PFC_ADC_CHECK_TIME_MS           200U
-#define PFC_PRECHARGE_STABLE_MS         500U
-/* VAC有效值相对额定值的允许偏差，0.10表示正负10%。 */
-#define PFC_VAC_RMS_TOLERANCE           0.10f
+#define PFC_ADC_CHECK_TIME_MS           100U /* ADC工程量连续有效100 ms后进入输入稳定等待。 */
+#define PFC_PRECHARGE_STABLE_MS         200U /* VAC和自然整流母线连续满足条件200 ms后进入READY。 */
+/* VAC有效值相对额定值的允许偏差，0.20表示正负20%，36 V档对应28.8~43.2 V RMS。 */
+#define PFC_VAC_RMS_TOLERANCE           0.20f
 
 static const PFC_Params *app_params = 0; /* 初始化后只读，参数对象必须常驻。 */
 /* 当前PFC状态：主循环状态机写，ADC ISR故障入口也可能改为FAULT_LATCH。 */
 static volatile PFC_State app_state = PFC_SAFE;
 
 /* 状态驻留时间，单位ms；PFC_AppTick1ms()每次加1，状态迁移时清零。 */
-static uint32_t app_state_time_ms = 0U;
-/* 被动预充条件连续成立时间，单位ms；只在PASSIVE_PRECHARGE状态累计。 */
+static volatile uint32_t app_state_time_ms = 0U;
+/* PRIME由ADC ISR切到CURRENT_RAMP时置1，主循环下一次1 ms Tick负责无竞争地清零计时。 */
+static volatile uint8_t app_state_time_reset_requested = 0U;
+/* 自然整流母线和输入条件连续成立时间，单位ms；只在PASSIVE_PRECHARGE状态累计。 */
 static uint32_t app_precharge_stable_ms = 0U;
 
 /* 上一次100 ms IWDG健康检查读取的序列/心跳，由主循环监督函数独占更新。 */
@@ -63,31 +64,72 @@ static uint16_t key_pressed_ms = 0U;     /* 消抖后稳定按下时间，单位
  */
 static uint8_t PFC_AppInputReady(const PFC_Measurement *measurement)
 {
+    return (PFC_AppGetReadyBlockReason(measurement) == PFC_READY_BLOCK_NONE) ?
+           1U : 0U;
+}
+
+uint16_t PFC_AppGetReadyBlockReason(const PFC_Measurement *measurement)
+{
+    uint16_t reason = PFC_READY_BLOCK_NONE;
+#if PFC_USER_RELAXED_PWM_TEST == 0U
     float vac_min;
     float vac_max;
     float frequency_min;
     float frequency_max;
+#endif
 
-    /* 上下限均由活动参数档计算，电压单位V RMS，频率单位Hz。 */
-
-    if ((measurement == 0) || (app_params == 0) ||
-        (PFC_Params_PowerAllowed(app_params) == 0U))
+    if (app_params == 0)
     {
-        return 0U;
+        return PFC_READY_BLOCK_PARAM;
     }
 
+    if (app_params->run_mode != PFC_RUN_MODE_CLOSED_LOOP)
+    {
+        reason |= PFC_READY_BLOCK_MODE;
+    }
+    if ((PFC_Params_Validate(app_params) == 0U) ||
+        (PFC_Params_CalibrationReady(app_params) == 0U))
+    {
+        reason |= PFC_READY_BLOCK_PARAM;
+    }
+    if ((measurement == 0) || (measurement->valid == 0U))
+    {
+        return (uint16_t)(reason | PFC_READY_BLOCK_MEASUREMENT);
+    }
+
+#if PFC_USER_RELAXED_PWM_TEST == 0U
     vac_min = app_params->vac_nominal_rms * (1.0f - PFC_VAC_RMS_TOLERANCE);
     vac_max = app_params->vac_nominal_rms * (1.0f + PFC_VAC_RMS_TOLERANCE);
     frequency_min = app_params->grid_frequency_hz - app_params->grid_frequency_tolerance;
     frequency_max = app_params->grid_frequency_hz + app_params->grid_frequency_tolerance;
 
-    return (uint8_t)((measurement->valid != 0U) &&
-                     (measurement->vac_locked != 0U) &&
-                     (measurement->vac_rms >= vac_min) &&
-                     (measurement->vac_rms <= vac_max) &&
-                     (measurement->vac_frequency_hz >= frequency_min) &&
-                     (measurement->vac_frequency_hz <= frequency_max) &&
-                     (measurement->vbus >= app_params->vbus_start_min));
+    if (measurement->vac_locked == 0U)
+    {
+        reason |= PFC_READY_BLOCK_VAC_LOCK;
+    }
+    if ((measurement->vac_rms < vac_min) || (measurement->vac_rms > vac_max))
+    {
+        reason |= PFC_READY_BLOCK_VAC_RMS;
+    }
+    if ((measurement->vac_frequency_hz < frequency_min) ||
+        (measurement->vac_frequency_hz > frequency_max))
+    {
+        reason |= PFC_READY_BLOCK_VAC_FREQ;
+    }
+    if (measurement->vbus < app_params->vbus_start_min)
+    {
+        reason |= PFC_READY_BLOCK_VBUS_LOW;
+    }
+    if (measurement->vbus >= app_params->vbus_overvoltage_warn)
+    {
+        reason |= PFC_READY_BLOCK_VBUS_HIGH;
+    }
+#endif
+    if (measurement->fault_bits != PFC_FAULT_NONE)
+    {
+        reason |= PFC_READY_BLOCK_FAULT;
+    }
+    return reason;
 }
 
 /**
@@ -169,6 +211,7 @@ static void PFC_AppEnterReady(void)
 {
     app_state = PFC_READY;
     app_state_time_ms = 0U;
+    app_state_time_reset_requested = 0U;
     key_ready_armed = 0U;
 }
 
@@ -183,9 +226,9 @@ static void PFC_AppStopPower(void)
 }
 
 /**
- * @brief  复核许可条件，准备PR电流环、写中性Compare并开放四路HRTIM输出。
+ * @brief  复核许可条件并进入PRIME，等待10 kHz路径在正向过零同步开放输出。
  * @param  measurement 当前1 ms状态机读取的一致性测量快照。
- * @note   仅在READY短按事件后调用；失败时锁存故障，不进行自动重试。
+ * @note   仅在READY短按事件后调用；本函数不开放HRTIM输出，PRIME可由PD0再次短按取消。
  */
 static void PFC_AppStartPower(const PFC_Measurement *measurement)
 {
@@ -195,14 +238,16 @@ static void PFC_AppStartPower(const PFC_Measurement *measurement)
         return;
     }
 
-    if ((PFC_Control_EnterMode(PFC_CONTROL_CURRENT_RAMP, measurement) != HAL_OK) ||
-        (SPWM_ForceNeutral() != HAL_OK) ||
-        (PFC_HRTIM_StartOutputs() != HAL_OK))
+    if (PFC_Control_EnterMode(PFC_CONTROL_PRIME, measurement) != HAL_OK)
     {
-        PFC_AppTrip(PFC_FAULT_HRTIM | PFC_FAULT_MODULATION);
+        PFC_ControlTelemetry telemetry;
+
+        PFC_Control_GetTelemetry(&telemetry);
+        PFC_AppTrip((telemetry.fault_bits != 0U) ? telemetry.fault_bits :
+                                                   PFC_FAULT_CONTROL);
         return;
     }
-    app_state = PFC_CURRENT_LOOP_RAMP;
+    app_state = PFC_PWM_PRIME;
     app_state_time_ms = 0U;
 }
 
@@ -218,6 +263,7 @@ void PFC_AppInit(const PFC_Params *params, uint8_t iwdg_reset_seen)
     app_iwdg_reset_seen = iwdg_reset_seen;
     app_state = PFC_SAFE;
     app_state_time_ms = 0U;
+    app_state_time_reset_requested = 0U;
     app_precharge_stable_ms = 0U;
     app_last_adc1_sequence = 0U;
     app_last_adc2_sequence = 0U;
@@ -251,7 +297,48 @@ void PFC_AppFastStep(void)
     {
         return;
     }
-    if ((app_state == PFC_CURRENT_LOOP_RAMP) ||
+    if (app_state == PFC_PWM_PRIME)
+    {
+        PFC_ControlTelemetry telemetry;
+
+        if (PFC_Control_Step10k(&measurement) != HAL_OK)
+        {
+            PFC_Control_GetTelemetry(&telemetry);
+            PFC_AppTrip((telemetry.fault_bits != 0U) ? telemetry.fault_bits :
+                                                       PFC_FAULT_CONTROL);
+            return;
+        }
+
+        PFC_Control_GetTelemetry(&telemetry);
+        if (telemetry.prime_waiting == 0U)
+        {
+            /*
+             * 当前ADC1回调位于HRTIM周期固定相位。先把本帧VAC/VBUS前馈Compare同步
+             * 提交到A/B活动寄存器，再切换控制状态，最后开放四路输出，避免旧的
+             * 50%/50%中性Compare在36 V输入下暴露一个或多个100 us周期。
+             */
+            if (PFC_HRTIM_CommitCompare() != HAL_OK)
+            {
+                PFC_AppTrip(PFC_FAULT_HRTIM | PFC_FAULT_MODULATION);
+                return;
+            }
+            if (PFC_Control_EnterMode(PFC_CONTROL_CURRENT_RAMP,
+                                      &measurement) != HAL_OK)
+            {
+                PFC_AppTrip(PFC_FAULT_CONTROL);
+                return;
+            }
+            app_state = PFC_CURRENT_LOOP_RAMP;
+            app_state_time_reset_requested = 1U;
+            if (PFC_HRTIM_StartOutputs() != HAL_OK)
+            {
+                PFC_AppTrip(PFC_FAULT_HRTIM | PFC_FAULT_MODULATION);
+                return;
+            }
+            PFC_Control_ConfirmOutputsEnabled(&measurement);
+        }
+    }
+    else if ((app_state == PFC_CURRENT_LOOP_RAMP) ||
         (app_state == PFC_VBUS_LOOP_RAMP) ||
         (app_state == PFC_VBUS_LOOP_RUN))
     {
@@ -276,7 +363,15 @@ void PFC_AppTick1ms(void)
     uint8_t short_press = PFC_AppReadShortPress();
 
     PFC_Measure_GetSnapshot(&measurement);
-    app_state_time_ms++;
+    if (app_state_time_reset_requested != 0U)
+    {
+        app_state_time_ms = 0U;
+        app_state_time_reset_requested = 0U;
+    }
+    else
+    {
+        app_state_time_ms++;
+    }
 
     if (measurement.fault_bits != PFC_FAULT_NONE)
     {
@@ -381,6 +476,7 @@ void PFC_AppTick1ms(void)
             app_state = PFC_STOP;
             app_state_time_ms = 0U;
         }
+#if PFC_USER_RELAXED_PWM_TEST == 0U
         else if ((measurement.vac_locked == 0U) ||
                  (measurement.vbus < app_params->vbus_run_min))
         {
@@ -408,6 +504,36 @@ void PFC_AppTick1ms(void)
                 PFC_AppTrip(PFC_FAULT_CURRENT_TRACKING);
             }
         }
+#else
+        /*
+         * 波形验证模式不再把电流误差是否达标作为投入PI的许可条件。
+         * PR仍按原斜率运行并继续计算误差RMS；达到最短观察时间后直接切入母线外环，
+         * 便于从VOFA同时观察Iref、IPFC、VBUS参考和调制度的闭环反应。
+         */
+        else if (app_state_time_ms >= app_params->current_probe_min_ms)
+        {
+            if (PFC_Control_EnterMode(PFC_CONTROL_VBUS_RAMP,
+                                      &measurement) != HAL_OK)
+            {
+                PFC_AppTrip(PFC_FAULT_CONTROL);
+            }
+            else
+            {
+                app_state = PFC_VBUS_LOOP_RAMP;
+                app_state_time_ms = 0U;
+            }
+        }
+#endif
+        break;
+
+    case PFC_PWM_PRIME:
+        /* PRIME不设置等待超时和新故障；PD0再次短按只取消本次启动命令。 */
+        if (short_press != 0U)
+        {
+            PFC_AppStopPower();
+            app_state = PFC_STOP;
+            app_state_time_ms = 0U;
+        }
         break;
 
     case PFC_VBUS_LOOP_RAMP:
@@ -417,6 +543,7 @@ void PFC_AppTick1ms(void)
             app_state = PFC_STOP;
             app_state_time_ms = 0U;
         }
+#if PFC_USER_RELAXED_PWM_TEST == 0U
         else if ((measurement.vac_locked == 0U) ||
                  (measurement.vbus < app_params->vbus_run_min))
         {
@@ -448,6 +575,27 @@ void PFC_AppTick1ms(void)
                 PFC_AppTrip(PFC_FAULT_TARGET_TIMEOUT);
             }
         }
+#else
+        else
+        {
+            PFC_ControlTelemetry telemetry;
+            PFC_Control_GetTelemetry(&telemetry);
+            /* 参考值爬到目标即进入RUN，不再要求实测VBUS同时落入目标容差。 */
+            if (telemetry.vbus_reference_reached != 0U)
+            {
+                if (PFC_Control_EnterMode(PFC_CONTROL_VBUS_RUN,
+                                          &measurement) != HAL_OK)
+                {
+                    PFC_AppTrip(PFC_FAULT_CONTROL);
+                }
+                else
+                {
+                    app_state = PFC_VBUS_LOOP_RUN;
+                    app_state_time_ms = 0U;
+                }
+            }
+        }
+#endif
         break;
 
     case PFC_VBUS_LOOP_RUN:
@@ -457,11 +605,13 @@ void PFC_AppTick1ms(void)
             app_state = PFC_STOP;
             app_state_time_ms = 0U;
         }
+#if PFC_USER_RELAXED_PWM_TEST == 0U
         else if ((measurement.vac_locked == 0U) ||
                  (measurement.vbus < app_params->vbus_run_min))
         {
             PFC_AppTrip(PFC_FAULT_VAC_LOST);
         }
+#endif
         break;
 
     case PFC_STOP:
@@ -497,7 +647,8 @@ void PFC_AppTick1ms(void)
 void PFC_AppTrip(uint32_t fault_bits)
 {
     PFC_Measure_Trip(fault_bits);
-    PFC_Control_Reset();
+    /* HRTIM已经由PFC_Measure_Trip()关断；复位控制器历史但保留首个失败现场。 */
+    PFC_Control_ResetPreserveFault();
     app_state = PFC_FAULT_LATCH;
 }
 

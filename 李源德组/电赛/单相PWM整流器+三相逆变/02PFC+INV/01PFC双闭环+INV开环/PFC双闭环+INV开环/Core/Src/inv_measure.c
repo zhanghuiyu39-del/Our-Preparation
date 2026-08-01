@@ -1,4 +1,5 @@
 #include "inv_measure.h"
+#include "inv_user_config.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -25,8 +26,8 @@ volatile uint16_t INV_Adc3Dma[2] = {0U, 0U};
 volatile uint16_t INV_Adc4Dma[2] = {0U, 0U};
 volatile uint16_t INV_Adc5Dma[2] = {0U, 0U};
 
-/* 供Keil Watch直接观察；ISR写入，主循环应优先调用快照接口。 */
-volatile INV_CalibrationResult inv_calibration_result;
+/* ISR写入的内部标定结果；主循环必须通过快照接口读取。 */
+static volatile INV_CalibrationResult inv_calibration_result;
 
 /* 配置在ADC/DMA启动前复制一次，采样运行期间只读。 */
 static INV_MeasureConfig inv_measure_config;
@@ -123,12 +124,12 @@ static uint8_t INV_Measure_UpdateRailCounter(uint16_t raw, uint8_t channel)
     return (rail_frame_count[channel] >= inv_measure_config.rail_confirm_frames) ? 1U : 0U;
 }
 
-/** 按固定顺序组装六路原始码，顺序与配置数组和标定通道编号一致。 */
+/** 只读取三个Rank2线电压；Rank1电流虽然由DMA写入，但本版软件不读取。 */
 static void INV_Measure_ReadRaw(uint16_t raw[INV_ADC_CHANNEL_COUNT])
 {
-    raw[0] = INV_Adc3Dma[0];
-    raw[1] = INV_Adc4Dma[0];
-    raw[2] = INV_Adc5Dma[0];
+    raw[0] = 0U;
+    raw[1] = 0U;
+    raw[2] = 0U;
     raw[3] = INV_Adc3Dma[1];
     raw[4] = INV_Adc4Dma[1];
     raw[5] = INV_Adc5Dma[1];
@@ -207,22 +208,19 @@ static void INV_Measure_ProcessGain(const uint16_t raw[INV_ADC_CHANNEL_COUNT])
     }
 }
 
-/** 使用当前offset/scale换算六路物理量；标定值未确认前只用于观察。 */
+/** 使用当前offset/scale换算三路线电压；三个电流工程量固定为0。 */
 static void INV_Measure_ConvertPhysical(const uint16_t raw[INV_ADC_CHANNEL_COUNT])
 {
-    inv_measurement.iu = ((float)raw[0] - (float)measurement_offset[0]) *
-                         inv_measure_config.scale[0] * (float)inv_measure_config.polarity[0];
-    inv_measurement.iv = ((float)raw[1] - (float)measurement_offset[1]) *
-                         inv_measure_config.scale[1] * (float)inv_measure_config.polarity[1];
-    inv_measurement.iw = ((float)raw[2] - (float)measurement_offset[2]) *
-                         inv_measure_config.scale[2] * (float)inv_measure_config.polarity[2];
+    inv_measurement.iu = 0.0f;
+    inv_measurement.iv = 0.0f;
+    inv_measurement.iw = 0.0f;
     inv_measurement.vuv = ((float)raw[3] - (float)measurement_offset[3]) *
                           inv_measure_config.scale[3] * (float)inv_measure_config.polarity[3];
     inv_measurement.vvw = ((float)raw[4] - (float)measurement_offset[4]) *
                           inv_measure_config.scale[4] * (float)inv_measure_config.polarity[4];
     inv_measurement.vwu = ((float)raw[5] - (float)measurement_offset[5]) *
                           inv_measure_config.scale[5] * (float)inv_measure_config.polarity[5];
-    inv_measurement.current_sum = inv_measurement.iu + inv_measurement.iv + inv_measurement.iw;
+    inv_measurement.current_sum = 0.0f;
     inv_measurement.line_voltage_sum = inv_measurement.vuv +
                                        inv_measurement.vvw +
                                        inv_measurement.vwu;
@@ -270,10 +268,11 @@ static bool INV_Measure_TryPublish(INV_Measurement *frame)
     /* 标定模式允许施加接近量程边缘的已知输入，不运行贴轨关断。 */
     if ((inv_measure_config.mode == INV_MEASURE_RUN_AUTO_OFFSET) ||
         (inv_measure_config.mode == INV_MEASURE_RUN_FIXED_CALIBRATION)) {
-        for (channel = 0U; channel < INV_ADC_CHANNEL_COUNT; channel++) {
+        /* Rank1电流通道未接入本次控制，只诊断VUV/VVW/VWU三个Rank2通道。 */
+        for (channel = 3U; channel < INV_ADC_CHANNEL_COUNT; channel++) {
             rail_fault |= INV_Measure_UpdateRailCounter(raw[channel], channel);
         }
-        if (rail_fault != 0U) {
+        if ((rail_fault != 0U) && (INV_USER_RELAXED_MONITORING == 0U)) {
             INV_Measure_LatchFault(INV_FAULT_ADC_RANGE);
         }
         if (inv_measure_config.mode == INV_MEASURE_RUN_AUTO_OFFSET) {
@@ -396,29 +395,14 @@ HAL_StatusTypeDef INV_Measure_ConfigureWatchdogs(ADC_HandleTypeDef *hadc3_handle
     low = inv_measure_config.rail_low_count;
     high = inv_measure_config.rail_high_count;
 
-    /* IOC中的ADC通道固定为：ADC3 IU/VUV、ADC4 IV/VVW、ADC5 IW/VWU。 */
-    if (INV_Measure_ConfigAwd(hadc3_handle, ADC_ANALOGWATCHDOG_1,
-                              ADC_ANALOGWATCHDOG_SINGLE_REG, ADC_CHANNEL_12,
-                              low, high) != HAL_OK) {
-        return HAL_ERROR;
-    }
+    /* IOC中的Rank2线电压为：ADC3 VUV、ADC4 VVW、ADC5 VWU；Rank1电流不配置运行期AWD。 */
     if (INV_Measure_ConfigAwd(hadc3_handle, ADC_ANALOGWATCHDOG_2,
                               ADC_ANALOGWATCHDOG_SINGLE_REGINJEC, ADC_CHANNEL_7,
                               low, high) != HAL_OK) {
         return HAL_ERROR;
     }
-    if (INV_Measure_ConfigAwd(hadc4_handle, ADC_ANALOGWATCHDOG_1,
-                              ADC_ANALOGWATCHDOG_SINGLE_REG, ADC_CHANNEL_12,
-                              low, high) != HAL_OK) {
-        return HAL_ERROR;
-    }
     if (INV_Measure_ConfigAwd(hadc4_handle, ADC_ANALOGWATCHDOG_2,
                               ADC_ANALOGWATCHDOG_SINGLE_REGINJEC, ADC_CHANNEL_1,
-                              low, high) != HAL_OK) {
-        return HAL_ERROR;
-    }
-    if (INV_Measure_ConfigAwd(hadc5_handle, ADC_ANALOGWATCHDOG_1,
-                              ADC_ANALOGWATCHDOG_SINGLE_REG, ADC_CHANNEL_13,
                               low, high) != HAL_OK) {
         return HAL_ERROR;
     }
@@ -430,18 +414,25 @@ HAL_StatusTypeDef INV_Measure_ConfigureWatchdogs(ADC_HandleTypeDef *hadc3_handle
 bool INV_Measure_OnAdc3Complete(INV_Measurement *frame)
 {
     adc3_sequence++;
+    /* 三路线电压各自先发布原始码；其他ADC停止时，本通道仍可在OLED/VOFA观察。 */
+    inv_measurement.vuv_raw = INV_Adc3Dma[1];
+    inv_measurement.adc3_sequence = adc3_sequence;
     return INV_Measure_TryPublish(frame);
 }
 
 bool INV_Measure_OnAdc4Complete(INV_Measurement *frame)
 {
     adc4_sequence++;
+    inv_measurement.vvw_raw = INV_Adc4Dma[1];
+    inv_measurement.adc4_sequence = adc4_sequence;
     return INV_Measure_TryPublish(frame);
 }
 
 bool INV_Measure_OnAdc5Complete(INV_Measurement *frame)
 {
     adc5_sequence++;
+    inv_measurement.vwu_raw = INV_Adc5Dma[1];
+    inv_measurement.adc5_sequence = adc5_sequence;
     return INV_Measure_TryPublish(frame);
 }
 

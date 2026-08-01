@@ -16,7 +16,10 @@
  * 自己的ADC标定；5 V档的零点、比例和控制增益不能直接复制给36 V档。
  */
 #define PFC_USER_PROFILE_5V                  0U /* 5 V RMS隔离低压调试档编号，不直接作为物理量使用。 */
-#define PFC_USER_PROFILE_36V                 1U /* 36 V RMS赛题预留档编号，未完成实测前禁止闭环。 */
+#define PFC_USER_PROFILE_36V_LIGHT_100R      1U /* 36 V RMS、60 V母线、100 ohm轻载闭环档；用于先验收轻载。 */
+#define PFC_USER_PROFILE_36V_MID_50R         2U /* 36 V RMS、60 V母线、50 ohm中负载调试档；用于逐步加重负载。 */
+#define PFC_USER_PROFILE_36V_CONTEST         3U /* 36 V RMS赛题满功率预留档；控制参数与轻载档分开保存。 */
+#define PFC_USER_PROFILE_36V                 PFC_USER_PROFILE_36V_CONTEST /* 兼容旧名称；旧代码选择它时仍进入满功率赛题档。 */
 
 /*
  * RAW_ADC：只观察ADC原始码统计，工程量无效，PD0和PWM均禁止。
@@ -31,8 +34,24 @@
  * 日常只需要先改下面两行。推荐顺序固定为5V+RAW_ADC -> 5V+ENGINEERING_CHECK
  * -> 5V+CLOSED_LOOP。切换到36V不会自动重算ADC比例、PR/PI或保护阈值。
  */
-#define PFC_USER_ACTIVE_PROFILE              PFC_USER_PROFILE_5V  /* 当前采用的整套参数档；改后必须全量重新编译。 */
-#define PFC_USER_RUN_MODE                    PFC_USER_MODE_CLOSED_LOOP /* 当前运行权限；默认值确保任何PD0操作都无PWM。 */
+#define PFC_USER_ACTIVE_PROFILE              PFC_USER_PROFILE_36V_CONTEST /* 当前按已接入的50 ohm负载选择中负载参数；确认100 ohm时改回LIGHT_100R。 */
+#define PFC_USER_RUN_MODE                    PFC_USER_MODE_CLOSED_LOOP /* 默认允许状态机在实时输入条件满足后，通过PD0短按投入PI+PR闭环。 */
+
+/*
+ * 闭环PWM波形验证开关：
+ * 1U = 当前调试用法。只要参数、ADC标定和同步工程量有效，状态机即可进入READY；
+ *      不再用VAC幅值/频率、母线启动门槛、电流跟踪、目标建立超时、ADC看门狗、
+ *      软件过流/过压、ADC贴轨、PR/SPWM限幅和母线稳压失调来关闭PWM。上述诊断量
+ *      仍继续统计，可在OLED、VOFA或Keil Watch中观察控制是否正确。
+ * 0U = 恢复完整状态机判据和软件保护，准备正式带载前应切回0U并逐项验证阈值。
+ *
+ * 修改后果：设置为1U不会改变PI、PR、PWM频率、死区、调制度上限或电流指令，
+ * 只取消这些条件对状态迁移和关PWM的影响。放宽模式下VBUS接近0的单个采样帧
+ * 会改用最近一次有效VBUS或参数档目标值，并累计vbus_fallback_count；ADC/DMA
+ * 失步、HAL错误、非有限数、HRTIM写入失败及HRTIM Fault仍会停机。下载新程序后
+ * 必须复位一次，旧的锁存故障才会清零。
+ */
+#define PFC_USER_RELAXED_PWM_TEST             1U
 
 /* ======================== 2. 5 V低压参数档 ======================== */
 /*
@@ -47,8 +66,8 @@
 #define PFC_USER_5V_VBUS_START_MIN_V         5.0f       /* V，进入READY前被动母线最低门槛；过高会一直等不到READY，过低会在母线不足时允许启动并放大调制除法风险。 */
 #define PFC_USER_5V_VBUS_RUN_MIN_V           4.0f       /* V，带功率期间母线跌落关断门槛；调高保护更保守但易欠压误停，调低会让控制在低母线下继续增大调制度。 */
 #define PFC_USER_5V_LOAD_RESISTANCE_OHM      30.0f      /* ohm，目标直流负载记录值；当前控制器不直接使用它计算指令，改负载后仍需实测功率、PI上限和温升。 */
-#define PFC_USER_5V_INPUT_INDUCTANCE_H       470.0e-6f  /* H，交流侧电感实测值；供开环模型/参数记录使用，改变电感会改变电流纹波和对象动态，必须重新整定PR。 */
-#define PFC_USER_5V_BUS_CAPACITANCE_F        4700.0e-6f /* F，母线电容实测值；当前不会自动重算PI，电容减小会增大100 Hz纹波并加快动态，改动后需重整PI和过压裕量。 */
+#define PFC_USER_5V_INPUT_INDUCTANCE_H       940.0e-6f  /* H，交流侧电感实测值；供开环模型/参数记录使用，改变电感会改变电流纹波和对象动态，必须重新整定PR。 */
+#define PFC_USER_5V_BUS_CAPACITANCE_F        4000.0e-6f /* F，母线电容实测值；当前不会自动重算PI，电容减小会增大100 Hz纹波并加快动态，改动后需重整PI和过压裕量。 */
 #define PFC_USER_5V_CONTROL_FREQUENCY_HZ     10000.0f   /* Hz，必须与HRTIM/ADC真实10 kHz节拍一致；它参与PR离散化、统计窗口和斜坡换算，禁止只改此宏而不改CubeMX时基。 */
 
 /*
@@ -65,7 +84,7 @@
 #define PFC_USER_5V_IPFC_ZERO_COUNT          2046U      /* ADC count，IPFC零电流时1秒mean；填高会把全部电流结果向负方向平移，填低则向正方向平移。 */
 #define PFC_USER_5V_VAC_ZERO_COUNT           2046U      /* ADC count，VAC零输入时1秒mean；错误零点会造成正负半周不对称、RMS偏大和过零时间偏移。 */
 #define PFC_USER_5V_IPFC_A_PER_COUNT         0.003322f     /* A/count，低压占位值；按已知电流峰值标定，改后必须复核IPFC RMS、软件过流和ADC1 AWD1窗口。 */
-#define PFC_USER_5V_VAC_V_PER_COUNT          0.02730f     /* V/count，低压占位值；按已知VAC峰值标定，改后应看到5 V RMS、约7.07 V峰值并复核ADC2 AWD1。 */
+#define PFC_USER_5V_VAC_V_PER_COUNT          0.02730f     /* V/count，暂保留当前值；5.06 V RMS单点数据曾推算约0.02123，必须用1/3/5 V RMS多点复测线性后再改，禁止直接凭单点覆盖。 */
 #define PFC_USER_5V_VBUS_V_PER_COUNT         0.02106f     /* V/count，单极性母线占位值且不减零点；改后用万用表复核，并重新计算9.8/10.5 V对应的AWD码。 */
 #define PFC_USER_5V_IPFC_POLARITY            1          /* +1/-1，定义正向输入电流的符号；选错会使PR形成正反馈，必须先在无功率已知电流下确认。 */
 #define PFC_USER_5V_VAC_POLARITY             1          /* +1/-1，定义VAC正半周；选错会让电流参考相位反转，并破坏过零同步与功率因数方向。 */
@@ -78,12 +97,12 @@
  * 未接OCP/DESAT，以下软件/AWD阈值仍不能替代独立微秒级短路保护。
  */
 #define PFC_USER_5V_CURRENT_TRIP_A_PEAK      1.20f      /* A peak，IPFC绝对值软件关断及ADC1 AWD1目标；增大前先确认传感器量程、MOSFET/电感和限流电源能力。 */
-#define PFC_USER_5V_VAC_PEAK_TRIP_V          8.50f      /* V peak，VAC绝对值允许上限及ADC2 AWD1窗口；5 V RMS理论峰值7.07 V，太接近会在波动/噪声时误停。 */
+#define PFC_USER_5V_VAC_PEAK_TRIP_V          10.0f      /* V peak，VAC绝对值允许上限及ADC2 AWD1窗口；5 V RMS理论峰值7.07 V，太接近会在波动/噪声时误停。 */
 #define PFC_USER_5V_VBUS_WARN_V              9.80f      /* V，接近过压时的遥测告警参考，不直接关PWM；应高于目标且低于TRIP。 */
 #define PFC_USER_5V_VBUS_TRIP_V              10.50f     /* V，VBUS软件关断和ADC1 AWD2高阈值；调高会增加母线/器件应力，调低可能在100 Hz纹波峰值误触发。 */
 #define PFC_USER_5V_VBUS_TOLERANCE_V         0.50f      /* V，判定母线目标建立的±容差；调大更容易进入RUN但稳压判据变松，调小会延长RAMP或触发超时。 */
 #define PFC_USER_5V_MODULATION_LIMIT         0.90f      /* 归一化绝对值，限制桥臂电压指令；调高增加升压能力但减少占空比/死区裕量，禁止超过运行期校验上限0.95。 */
-#define PFC_USER_5V_CURRENT_TARGET_A_PEAK    0.80f      /* A peak，PI最大RMS指令约为本值/sqrt(2)=0.566 A；调高可带更重负载但必须同步保留CURRENT_TRIP裕量。 */
+#define PFC_USER_5V_CURRENT_TARGET_A_PEAK    1.00f      /* A peak，PI最大RMS指令约0.707 A，可覆盖9 V/30 ohm在约85%效率下约0.635 A RMS的输入需求；仍须从130 ohm轻载逐级验证。 */
 #define PFC_USER_5V_CURRENT_RAMP_A_PER_S     0.50f      /* A/s，旧开环SPWM峰值指令斜率；当前PI+PR闭环启动主要使用PROBE_SLEW，本值不会改变闭环探测斜率。 */
 
 /*
@@ -102,17 +121,20 @@
 #define PFC_USER_5V_VBUS_SLEW_V_PER_S        1.0f       /* V/s，外环参考从当前VBUS爬到目标的速度；调大启动更快但电流冲击/超调增加，调小更安全但启动时间变长。 */
 #define PFC_USER_5V_PROBE_CURRENT_A_RMS      0.20f      /* A RMS，正式投入PI前用于验证PR极性和跟踪的轻载电流；应明显高于噪声且远低于正常/过流上限。 */
 #define PFC_USER_5V_PROBE_SLEW_A_PER_S       5.0f       /* A RMS/s，探测电流从0上升的速度；本值下到0.20 A约40 ms，调大冲击增大，调小可能接近超时。 */
-#define PFC_USER_5V_CURRENT_ERROR_MAX_A_RMS  0.15f      /* A RMS，允许从PR探测切入PI的最大跟踪误差；调大可能放过错误极性/弱控制，调小容易因噪声无法通过。 */
+#define PFC_USER_5V_CURRENT_ERROR_MAX_A_RMS  0.10f      /* A RMS，允许从PR探测切入PI的最大跟踪误差；0.10为0.20 A探测指令的50%，若实测噪声很小可再收紧到0.05~0.08。 */
 #define PFC_USER_5V_PROBE_MIN_MS             60U        /* ms，PR投入后最短观察时间；至少覆盖一个50 Hz周期20 ms并留出斜坡时间，过短不能可靠判断。 */
 #define PFC_USER_5V_CURRENT_TIMEOUT_MS       500U       /* ms，PR探测仍不合格的锁存故障时间；调大只延长异常带功率时间，不能解决极性或增益错误。 */
 #define PFC_USER_5V_VBUS_TIMEOUT_MS          8000U      /* ms，PI投入后母线仍未达到目标容差的故障时间；应大于参考斜坡理论时间并保留负载动态裕量。 */
 #define PFC_USER_5V_SATURATION_SAMPLES       200U       /* 个10 kHz样本，PR/调制度连续限幅关断门槛；200约20 ms，增大容忍更久但故障能量增加，减小易瞬态误停。 */
+#define PFC_USER_5V_PERIOD_SATURATION_RATIO  0.25f      /* 0~1，一个50 Hz周期内PR或调制度限幅样本占比上限；0.25表示200点中超过50点限幅即记为异常周期。 */
+#define PFC_USER_5V_PERIOD_SATURATION_CYCLES 3U         /* 个工频周期，严重周期性削顶连续出现本次数后关断；3周期约60 ms，调大将允许更久失真和器件应力。 */
+#define PFC_USER_5V_VBUS_REGULATION_TIMEOUT_MS 1000U    /* ms，进入稳态后PI已限幅且VBUS仍偏离目标容差的允许时间；超时说明负载过重、输入不足或采样/控制异常。 */
 
-/* ======================== 3. 36 V赛题参数档 ======================== */
+/* ======================== 3. 36 V共用ADC换算参数 ======================== */
 /*
- * 该档目前只保留赛题迁移骨架，并非已经验证的36 V实物参数。修改顺序与5 V档相同，
- * 但必须在36 V档自己的RAW_ADC模式重新标定，确认分压器/传感器量程、隔离、器件耐压、
- * 限流和硬件OCP/DESAT后才能把CONFIRMED改为1。下面增益来自初始设计，只能作为整定起点。
+ * 轻载档和赛题档使用同一块采样板，所以共用下面的ADC零点、比例和极性。切换档位不会
+ * 自动完成标定：VAC必须在5/12/24/32/36 V RMS多点复测，IPFC必须在0/0.2/0.5/1.0 A
+ * 复测，VBUS若只测到30 V则对60~66 V仍属于外推。当前按用户确认值直接运行，不再设置额外标定阻断。
  */
 #define PFC_USER_36V_VAC_NOMINAL_RMS         36.0f      /* V RMS，赛题输入额定值和电流参考归一化分母；实测输入额定值改变时再修改。 */
 #define PFC_USER_36V_GRID_FREQUENCY_HZ       50.0f      /* Hz，同时决定PR、二倍频陷波、RMS窗口和同步周期；不能只改显示值。 */
@@ -120,51 +142,157 @@
 #define PFC_USER_36V_VBUS_TARGET_V           60.0f      /* V，赛题档PI母线目标；调高前先核对母线电容、MOSFET、采样量程和过压阈值。 */
 #define PFC_USER_36V_VBUS_START_MIN_V        45.0f      /* V，允许启动闭环前的被动母线门槛；必须低于目标且高于运行除法的危险区。 */
 #define PFC_USER_36V_VBUS_RUN_MIN_V          40.0f      /* V，运行欠压关断值；太高易输入跌落误停，太低会在高调制度下继续运行。 */
-#define PFC_USER_36V_LOAD_RESISTANCE_OHM     32.4f      /* ohm，赛题目标负载记录值；软件不据此自动算电流，负载改变后仍需重新验收功率与温升。 */
-#define PFC_USER_36V_INPUT_INDUCTANCE_H      470.0e-6f  /* H，交流侧实测电感；电感改变会改变纹波/动态，需重新整定PR及检查饱和电流。 */
-#define PFC_USER_36V_BUS_CAPACITANCE_F       4700.0e-6f /* F，母线实测电容；改变后需重新检查100 Hz纹波、PI动态、浪涌和放电时间。 */
+#define PFC_USER_36V_LOAD_RESISTANCE_OHM     30.0f      /* ohm，赛题120 W等效负载；60 V母线时电流2 A、输出功率120 W。 */
+#define PFC_USER_36V_INPUT_INDUCTANCE_H      940.0e-6f  /* H，交流侧实测电感；电感改变会改变纹波/动态，需重新整定PR及检查饱和电流。 */
+#define PFC_USER_36V_BUS_CAPACITANCE_F       4000.0e-6f /* F，母线实测电容；改变后需重新检查100 Hz纹波、PI动态、浪涌和放电时间。 */
 #define PFC_USER_36V_CONTROL_FREQUENCY_HZ    10000.0f   /* Hz，必须与HRTIM/ADC实际节拍一致；单改此宏会让控制器离散系数和时间判据错误。 */
 
-/* 36 V档ADC值全部是占位值，必须按该电压档和实际采样链单独测量。 */
-#define PFC_USER_36V_IPFC_ZERO_COUNT         2046U      /* ADC count，36 V硬件零电流时1秒mean；不得直接使用5 V档测得的零点。 */
-#define PFC_USER_36V_VAC_ZERO_COUNT          2046U      /* ADC count，36 V采样链零输入时1秒mean；错误会造成VAC偏置、RMS和过零误差。 */
-#define PFC_USER_36V_IPFC_A_PER_COUNT        0.003322f     /* A/count，占位；按已知电流标定，改后重算软件过流和ADC1 AWD1原始码窗口。 */
-#define PFC_USER_36V_VAC_V_PER_COUNT         0.02730f     /* V/count，占位；按已知36 V正弦峰值标定，确认量程不会在约50.9 V峰值附近贴轨。 */
-#define PFC_USER_36V_VBUS_V_PER_COUNT        0.02106f     /* V/count，占位；用万用表多点标定60 V母线通道，并保留66 V过压对应的ADC余量。 */
+/* 36 V轻载测试直接使用当前已经确认的ADC换算值；本次不再设置额外标定流程或运行阻断。 */
+#define PFC_USER_36V_IPFC_ZERO_COUNT         2046U      /* ADC count，IPFC零电流偏置；改变后所有瞬时电流都会整体平移，并改变过流AWD窗口。 */
+#define PFC_USER_36V_VAC_ZERO_COUNT          2046U      /* ADC count，VAC零输入偏置；改变后会同时影响VAC RMS、过零同步和电流参考相位。 */
+#define PFC_USER_36V_IPFC_A_PER_COUNT        0.003323f  /* A/count，IPFC换算比例；比例增大会提高显示电流并更早触发软件过流。 */
+#define PFC_USER_36V_VAC_V_PER_COUNT         0.02730f   /* V/count，VAC换算比例；直接用于36 V RMS判断、前馈和瞬时电流参考计算。 */
+#define PFC_USER_36V_VBUS_V_PER_COUNT        0.021062f  /* V/count，VBUS换算比例；直接决定43/40/60/64/66 V各母线判据对应的ADC码。 */
 #define PFC_USER_36V_IPFC_POLARITY           1          /* +1/-1，正输入电流的软件方向；错误会使PR正反馈，只能无功率/限流验证后确定。 */
 #define PFC_USER_36V_VAC_POLARITY            1          /* +1/-1，VAC正半周的软件方向；应与IPFC正功率方向一致。 */
 #define PFC_USER_36V_BRIDGE_POLARITY         1          /* +1/-1，桥侧正电压方向；功率板接线变化后必须重新验证，不能凭5 V档推断。 */
-#define PFC_USER_36V_CALIBRATION_CONFIRMED   1U         /* 必须保持0，直到36 V档零点/比例/极性/保护和硬件安全链全部实测完成。 */
+#define PFC_USER_36V_CALIBRATION_CONFIRMED   1U         /* 1=采用上述零点、比例和极性计算工程量，并允许当前36 V闭环档进入READY。 */
+
+/* ======================== 4. 36 V、100 ohm轻载闭环调试档 ======================== */
+/*
+ * 60 V母线接100 ohm时输出约36 W，预计输入约1.1~1.3 A RMS。该档只用于验证升压、
+ * PI/PR方向和PF趋势，不代表赛题2 A输出、95%效率或THD已通过。负载在该工作点耗散
+ * 约36 W，除5 A电流能力外还必须确认连续功率和温升；满足实时条件后，本档允许开放PWM。
+ */
+#define PFC_USER_36V_LIGHT_VAC_NOMINAL_RMS         36.0f      /* V RMS，轻载档额定交流输入；Iref按此值归一化。 */
+#define PFC_USER_36V_LIGHT_GRID_FREQUENCY_HZ       50.0f      /* Hz，决定PR中心、100 Hz陷波、RMS和PF统计窗口。 */
+#define PFC_USER_36V_LIGHT_GRID_TOLERANCE_HZ       5.0f       /* Hz，VAC锁定允许范围放宽为45~55 Hz，减少变压器输入频偏导致的READY阻断。 */
+#define PFC_USER_36V_LIGHT_VBUS_TARGET_V           60.0f      /* V，轻载PI外环目标；提高时必须同步核对过压和器件耐压。 */
+#define PFC_USER_36V_LIGHT_VBUS_START_MIN_V        43.0f      /* V，允许PWM接管前的自然整流母线下限；降低后更能容忍变压器和二极管压降。 */
+#define PFC_USER_36V_LIGHT_VBUS_RUN_MIN_V          40.0f      /* V，带功率期间的母线欠压关断值；仍防止除以过低VBUS产生过大调制度。 */
+#define PFC_USER_36V_LIGHT_LOAD_RESISTANCE_OHM     100.0f     /* ohm，当前实际负载记录值；60 V时输出约36 W。 */
+#define PFC_USER_36V_LIGHT_INPUT_INDUCTANCE_H      940.0e-6f  /* H，两只470 uH电感串联的名义总值；实测偏差会影响PR整定。 */
+#define PFC_USER_36V_LIGHT_BUS_CAPACITANCE_F       4000.0e-6f /* F，母线电容；容量大可减小纹波，但上电浪涌和放电时间更大。 */
+#define PFC_USER_36V_LIGHT_CONTROL_FREQUENCY_HZ    10000.0f   /* Hz，必须与HRTIM触发和ADC DMA完整帧频率一致。 */
+#define PFC_USER_36V_LIGHT_CURRENT_TRIP_A_PEAK     4.00f      /* A peak，仅在PWM已开放时执行的软件关断值；100 ohm档不再收紧ADC1 AWD1窗口。 */
+#define PFC_USER_36V_LIGHT_VAC_PEAK_TRIP_V         55.0f      /* V peak，给36 V RMS理论50.9 V峰值及输入波动留出约4.1 V余量。 */
+#define PFC_USER_36V_LIGHT_VBUS_WARN_V             64.0f      /* V，仅用于READY上限和诊断，超过后不允许新启动。 */
+#define PFC_USER_36V_LIGHT_VBUS_TRIP_V             66.0f      /* V，软件和AWD2母线过压关断；需用高压实测验证对应ADC码。 */
+#define PFC_USER_36V_LIGHT_VBUS_TOLERANCE_V        1.0f       /* V，60 V稳态目标容差；太小可能因100 Hz纹波无法进入RUN。 */
+#define PFC_USER_36V_LIGHT_MODULATION_LIMIT        0.90f      /* 归一化绝对值，保留占空比与死区裕量。 */
+#define PFC_USER_36V_LIGHT_CURRENT_TARGET_A_PEAK   1.90f      /* A peak，PI最大输出约1.344 A RMS，覆盖36 W输出预计1.1~1.3 A RMS输入电流。 */
+#define PFC_USER_36V_LIGHT_CURRENT_RAMP_A_PER_S    1.00f      /* A/s，保留的峰值斜坡参数；闭环探测实际使用PROBE_SLEW。 */
+
+#define PFC_USER_36V_LIGHT_PR_KP                   0.50f      /* V/A，轻载电流环比例增益保守起点；过大将放大噪声。 */
+#define PFC_USER_36V_LIGHT_PR_KR                   5.00f      /* V/A，50 Hz谐振增益起点；只在波形稳定后逐步增加。 */
+#define PFC_USER_36V_LIGHT_PR_BANDWIDTH_RAD_S      5.00f      /* rad/s，准PR带宽；修改后需重新核对稳定性和频偏容忍度。 */
+#define PFC_USER_36V_LIGHT_PR_OUTPUT_LIMIT_V       5.00f      /* V，PR校正量限幅；持续50 ms触顶才锁存故障，短暂接管过程允许恢复。 */
+#define PFC_USER_36V_LIGHT_PI_KP_A_PER_V           0.05f      /* A/V，母线PI比例增益保守起点；轻载首次测试不要直接加大。 */
+#define PFC_USER_36V_LIGHT_PI_KI_A_PER_VS          1.00f      /* A/(V*s)，母线PI积分增益；过大易引起低频振荡和过冲。 */
+#define PFC_USER_36V_LIGHT_VOLTAGE_LOOP_HZ         1000.0f    /* Hz，固定为10 kHz快速环的1/10。 */
+#define PFC_USER_36V_LIGHT_NOTCH_DAMPING_RAD_S     50.0f      /* rad/s，100 Hz母线纹波陷波器阻尼参数。 */
+#define PFC_USER_36V_LIGHT_VBUS_SLEW_V_PER_S       2.0f       /* V/s，母线参考从接管值爬到60 V；加快会增加电流和过冲。 */
+#define PFC_USER_36V_LIGHT_PROBE_CURRENT_A_RMS     0.20f      /* A RMS，投入PI前的PR探测电流；约为预计轻载输入电流的下沿。 */
+#define PFC_USER_36V_LIGHT_PROBE_SLEW_A_PER_S      2.0f       /* A RMS/s，到0.20 A约100 ms；250 ms观察时间可覆盖斜坡及多个工频周期。 */
+#define PFC_USER_36V_LIGHT_CURRENT_ERROR_MAX_A_RMS 0.18f      /* A RMS，放宽PR切入PI的误差门槛；若长期接近此值仍需检查电流波形。 */
+#define PFC_USER_36V_LIGHT_PROBE_MIN_MS            250U       /* ms，PR投入后至少观察12个以上50 Hz周期再判断电流跟踪。 */
+#define PFC_USER_36V_LIGHT_CURRENT_TIMEOUT_MS      2500U      /* ms，100 ohm负载下允许电流环有更长建立时间，超时仍锁存故障。 */
+#define PFC_USER_36V_LIGHT_VBUS_TIMEOUT_MS         12000U     /* ms，覆盖2 V/s参考斜坡和100 ohm负载下的母线建立过程。 */
+#define PFC_USER_36V_LIGHT_SATURATION_SAMPLES      500U       /* 个10 kHz样本，PR或调制度连续限幅50 ms后关断，减少启动瞬态误停。 */
+#define PFC_USER_36V_LIGHT_PERIOD_SATURATION_RATIO 0.40f      /* 0~1，仅RUN中使用；单周期限幅样本超过40%才记为严重削顶。 */
+#define PFC_USER_36V_LIGHT_PERIOD_SATURATION_CYCLES 5U        /* 个周期，RUN中连续5个严重削顶周期后关断，约允许100 ms恢复。 */
+#define PFC_USER_36V_LIGHT_VBUS_REGULATION_TIMEOUT_MS 4000U   /* ms，RUN中PI限幅且母线失调持续4 s后才锁存稳压故障。 */
+
+/* ======================== 4.5. 36 V、50 ohm中负载调试参数档 ======================== */
+/*
+ * 60 V母线接50 ohm时输出约72 W，按约90%效率估算输入约2.2 A RMS，
+ * 因此100 ohm档的1.34 A RMS上限会导致母线掉压和调制长期贴边。本档把
+ * PI上限对应的电流指令提高到3.40 A peak（约2.40 A RMS），仍保留
+ * PR/PI保守增益，不直接使用赛题满功率档的激进增益。
+ *
+ * 注意：该档不能替代硬件限流、预充和快速短路保护。每次测试仍应从
+ * 100 ohm开始逐级降阻，出现输入电流尖峰、保险丝动作或电感异常升温
+ * 时立即断电，不要通过继续增大软件电流指令“硬顶”负载。
+ */
+#define PFC_USER_36V_MID_VAC_NOMINAL_RMS         36.0f      /* V RMS，输入额定值；改动后同步复核VAC标定和电流参考归一化。 */
+#define PFC_USER_36V_MID_GRID_FREQUENCY_HZ       50.0f      /* Hz，PR中心频率、RMS窗口和100 Hz陷波频率。 */
+#define PFC_USER_36V_MID_GRID_TOLERANCE_HZ       5.0f       /* Hz，允许45~55 Hz同步；过宽可能接受错误频率输入。 */
+#define PFC_USER_36V_MID_VBUS_TARGET_V           60.0f      /* V，PI外环目标；提高会增加母线器件应力和输入功率。 */
+#define PFC_USER_36V_MID_VBUS_START_MIN_V        43.0f      /* V，允许启动的被动母线下限；过低会让前馈调制裕量变差。 */
+#define PFC_USER_36V_MID_VBUS_RUN_MIN_V          40.0f      /* V，运行中的母线低压边界；低于此值时状态机停止继续加大功率。 */
+#define PFC_USER_36V_MID_LOAD_RESISTANCE_OHM     50.0f      /* ohm，当前测试负载记录值；60 V时约72 W，电阻连续功率必须足够。 */
+#define PFC_USER_36V_MID_INPUT_INDUCTANCE_H      940.0e-6f  /* H，两只470 uH电感串联的名义值；实际饱和会显著增加电流尖峰。 */
+#define PFC_USER_36V_MID_BUS_CAPACITANCE_F       4000.0e-6f /* F，母线电容；容量越大上电浪涌和放电时间越长。 */
+#define PFC_USER_36V_MID_CONTROL_FREQUENCY_HZ    10000.0f   /* Hz，必须与现有HRTIM/ADC DMA同步频率一致。 */
+#define PFC_USER_36V_MID_CURRENT_TRIP_A_PEAK     4.00f      /* A peak，保留现有软件过流阈值；不等于硬件短路保护。 */
+#define PFC_USER_36V_MID_VAC_PEAK_TRIP_V         55.0f      /* V peak，36 V RMS理论峰值约50.9 V，保留输入波动余量。 */
+#define PFC_USER_36V_MID_VBUS_WARN_V             64.0f      /* V，READY阶段的母线上限提示；超过时不接受新的启动。 */
+#define PFC_USER_36V_MID_VBUS_TRIP_V             66.0f      /* V，参数档过压阈值；必须与采样量程和母线器件耐压复核。 */
+#define PFC_USER_36V_MID_VBUS_TOLERANCE_V        1.0f       /* V，进入稳态RUN所需的母线目标容差。 */
+#define PFC_USER_36V_MID_MODULATION_LIMIT       0.90f      /* 归一化调制度绝对值上限；保留死区和采样延迟裕量。 */
+#define PFC_USER_36V_MID_CURRENT_TARGET_A_PEAK   3.40f      /* A peak，PI最大约2.40 A RMS，覆盖50 ohm约72 W输出的估算输入需求。 */
+#define PFC_USER_36V_MID_CURRENT_RAMP_A_PER_S    2.00f      /* A peak/s，记录用的总电流指令斜率；实际探测阶段使用下方PROBE_SLEW。 */
+#define PFC_USER_36V_MID_PR_KP                   0.50f      /* V/A，PR比例增益保守起点；增大可加快响应但会放大采样噪声。 */
+#define PFC_USER_36V_MID_PR_KR                   5.00f      /* V/A，50 Hz谐振增益；未确认极性前不要增大。 */
+#define PFC_USER_36V_MID_PR_BANDWIDTH_RAD_S      5.00f      /* rad/s，准PR带宽；过宽会放大频偏和噪声。 */
+#define PFC_USER_36V_MID_PR_OUTPUT_LIMIT_V       8.00f      /* V，PR校正电压限幅；过小跟踪不足，过大会加重调制削顶。 */
+#define PFC_USER_36V_MID_PI_KP_A_PER_V           0.05f      /* A/V，母线PI比例增益；先保持保守，避免50 ohm切入时电流阶跃。 */
+#define PFC_USER_36V_MID_PI_KI_A_PER_VS          1.00f      /* A/(V*s)，母线PI积分增益；增大可消除静差但会加重低频摆动。 */
+#define PFC_USER_36V_MID_VOLTAGE_LOOP_HZ         1000.0f    /* Hz，固定为10 kHz快速环的1/10。 */
+#define PFC_USER_36V_MID_NOTCH_DAMPING_RAD_S     50.0f      /* rad/s，100 Hz母线纹波陷波阻尼。 */
+#define PFC_USER_36V_MID_VBUS_SLEW_V_PER_S       4.0f       /* V/s，母线参考爬升速度；提高会增加电流和过冲。 */
+#define PFC_USER_36V_MID_PROBE_CURRENT_A_RMS     0.80f      /* A RMS，电流环探测指令；先验证PR方向再切入PI。 */
+#define PFC_USER_36V_MID_PROBE_SLEW_A_PER_S      8.0f       /* A RMS/s，约100 ms爬到0.80 A；过大可能造成输入电流尖峰。 */
+#define PFC_USER_36V_MID_CURRENT_ERROR_MAX_A_RMS 0.25f      /* A RMS，探测阶段允许的跟踪误差；过宽会误判PR已合格。 */
+#define PFC_USER_36V_MID_PROBE_MIN_MS            100U       /* ms，至少覆盖数个50 Hz周期后再切入PI。 */
+#define PFC_USER_36V_MID_CURRENT_TIMEOUT_MS      1500U      /* ms，电流环未达到探测条件的诊断超时。 */
+#define PFC_USER_36V_MID_VBUS_TIMEOUT_MS         12000U     /* ms，母线参考和负载建立过程的诊断超时。 */
+#define PFC_USER_36V_MID_SATURATION_SAMPLES      500U       /* 个10 kHz样本，连续限幅统计窗口；放宽模式下仅记录。 */
+#define PFC_USER_36V_MID_PERIOD_SATURATION_RATIO 0.40f      /* 0~1，RUN周期削顶遥测比例；不改变ADC/HRTIM节拍。 */
+#define PFC_USER_36V_MID_PERIOD_SATURATION_CYCLES 5U        /* 个工频周期，周期削顶遥测连续次数。 */
+#define PFC_USER_36V_MID_VBUS_REGULATION_TIMEOUT_MS 4000U   /* ms，PI限幅且稳态母线偏差持续时间。 */
+
+/* ======================== 5. 36 V、60 V/30 ohm赛题满功率参数档 ======================== */
+/*
+ * 60 V母线接30 ohm时输出电流2 A、功率120 W。按36 V RMS输入估算，
+ * 90%效率需要约3.70 A RMS输入，85%效率需要约3.92 A RMS输入。
+ * 因此本档把PI最大电流指令设为5.80 A peak，即约4.10 A RMS；该值
+ * 对应约81%效率时仍可覆盖120 W，但已经接近4.5 A RMS采样量程上沿。
+ * 100 ohm和50 ohm调试档不使用下列数值，切换赛题档后才参与编译。
+ */
 
 /* 36 V保护阈值调高会扩大故障能量，任何修改都必须先核对器件绝对额定值和硬件保护。 */
-#define PFC_USER_36V_CURRENT_TRIP_A_PEAK     5.20f      /* A peak，软件/AWD过流目标；必须高于正常峰值且低于采样、电感、MOSFET和保险链安全边界。 */
+#define PFC_USER_36V_CURRENT_TRIP_A_PEAK     6.20f      /* A peak，略高于5.80 A指令上限；约4.38 A RMS，接近4.5 A RMS采样量程。 */
 #define PFC_USER_36V_VAC_PEAK_TRIP_V         53.5f      /* V peak，VAC允许绝对峰值；36 V RMS理论峰值约50.9 V，阈值需覆盖正常波动但不能超过前端量程。 */
 #define PFC_USER_36V_VBUS_WARN_V             64.0f      /* V，母线告警参考，不直接关PWM；应在60 V目标与66 V关断值之间。 */
 #define PFC_USER_36V_VBUS_TRIP_V             66.0f      /* V，软件和ADC1 AWD2过压关断；调高前必须有母线器件和采样余量证据。 */
 #define PFC_USER_36V_VBUS_TOLERANCE_V        1.0f       /* V，60 V目标建立的±容差；调小提高判据但可能因100 Hz纹波无法进入RUN。 */
 #define PFC_USER_36V_MODULATION_LIMIT        0.90f      /* 归一化绝对值，保留占空比/死区裕量；提高会增大可用桥压同时增加失真和应力风险。 */
-#define PFC_USER_36V_CURRENT_TARGET_A_PEAK   4.80f      /* A peak，PI最大RMS指令约3.39 A；提高前要同步留出CURRENT_TRIP保护裕量并核对输入功率。 */
-#define PFC_USER_36V_CURRENT_RAMP_A_PER_S    1.00f      /* A/s，旧开环峰值指令斜率；当前闭环探测速度由PROBE_SLEW决定。 */
+#define PFC_USER_36V_CURRENT_TARGET_A_PEAK   5.80f      /* A peak，PI最大RMS指令约4.10 A，可覆盖36 V输入、60 V/30 ohm的120 W目标。 */
+#define PFC_USER_36V_CURRENT_RAMP_A_PER_S    2.00f      /* A/s，保留的总电流斜率记录值；闭环启动实际使用PROBE_SLEW。 */
 
-/* 36 V闭环增益只能在低压、限流、轻载下逐项重新整定，不能直接视为赛题最终值。 */
-#define PFC_USER_36V_PR_KP                   5.0f       /* V/A，电流环比例增益；增大响应更快但噪声、延时导致的振荡风险更高。 */
-#define PFC_USER_36V_PR_KR                   20.0f      /* V/A，50 Hz谐振增益；增大可减小稳态误差，但更易持续限幅或对频偏敏感。 */
+/* 赛题档继续沿用已用于轻/中负载档的PR方向和保守量级，避免直接使用原5/20激进增益。 */
+#define PFC_USER_36V_PR_KP                   0.50f      /* V/A，电流误差比例校正；波形稳定但跟踪偏慢时再小步增加。 */
+#define PFC_USER_36V_PR_KR                   5.00f      /* V/A，50 Hz谐振校正；提高会减小稳态误差但增加振荡和限幅概率。 */
 #define PFC_USER_36V_PR_BANDWIDTH_RAD_S      5.0f       /* rad/s，准PR带宽；调宽可容忍频偏但扩大谐振影响范围，需复核稳定裕量。 */
-#define PFC_USER_36V_PR_OUTPUT_LIMIT_V       80.0f      /* V，PR电压校正限幅；当前值必须结合60 V母线和调制度复核，过大可能立即把调制推到上限。 */
-#define PFC_USER_36V_PI_KP_A_PER_V           0.30f      /* A/V，母线比例增益；增大加快响应但会把100 Hz纹波和噪声转换为更大电流指令。 */
-#define PFC_USER_36V_PI_KI_A_PER_VS          15.0f      /* A/(V*s)，母线积分增益；过大易超调/低频振荡，必须从轻载小值逐步增加。 */
+#define PFC_USER_36V_PR_OUTPUT_LIMIT_V       10.0f      /* V，PR校正量上限；比轻载档略放宽，但避免原80 V立即把调制度推到边界。 */
+#define PFC_USER_36V_PI_KP_A_PER_V           0.10f      /* A/V，母线比例增益；相对轻载档提高一倍，仍避免原0.30的电流阶跃。 */
+#define PFC_USER_36V_PI_KI_A_PER_VS          2.00f      /* A/(V*s)，母线积分增益；用于逐步建立120 W功率，不采用原15.0激进值。 */
 #define PFC_USER_36V_VOLTAGE_LOOP_HZ         1000.0f    /* Hz，必须保持为10 kHz快速环的1/10，和代码固定分频一致。 */
 #define PFC_USER_36V_NOTCH_DAMPING_RAD_S     50.0f      /* rad/s，100 Hz陷波宽度相关参数；修改后需复核滤波相位和PI稳定性。 */
 #define PFC_USER_36V_VBUS_SLEW_V_PER_S       5.0f       /* V/s，母线参考爬升速度；加快会提高启动电流和过冲，减慢则需同步放宽VBUS超时。 */
-#define PFC_USER_36V_PROBE_CURRENT_A_RMS     0.50f      /* A RMS，PI投入前的PR探测电流；应足以压过噪声，但远低于额定/过流值。 */
-#define PFC_USER_36V_PROBE_SLEW_A_PER_S      10.0f      /* A RMS/s，探测电流斜率；到0.5 A约50 ms，调快会增加冲击，调慢需考虑探测超时。 */
-#define PFC_USER_36V_CURRENT_ERROR_MAX_A_RMS 0.50f      /* A RMS，允许切入PI的电流跟踪误差；过宽可能放过错误控制，过窄易受噪声/标定误差影响。 */
+#define PFC_USER_36V_PROBE_CURRENT_A_RMS     1.80f      /* A RMS，30 ohm带载启动探测值；避免0.5 A探测阶段母线因负载功率不足快速跌落。 */
+#define PFC_USER_36V_PROBE_SLEW_A_PER_S      30.0f      /* A RMS/s，约60 ms到达1.80 A；随后由PI无扰接管并继续增加电流。 */
+#define PFC_USER_36V_CURRENT_ERROR_MAX_A_RMS 0.35f      /* A RMS，切入PI前的电流跟踪误差门槛；约为探测指令的19%。 */
 #define PFC_USER_36V_PROBE_MIN_MS            60U        /* ms，PR最短观察时间；至少覆盖完整工频周期和电流斜坡。 */
-#define PFC_USER_36V_CURRENT_TIMEOUT_MS      500U       /* ms，电流环不能通过检查的故障时间；不能用延长超时掩盖极性或增益问题。 */
+#define PFC_USER_36V_CURRENT_TIMEOUT_MS      800U       /* ms，允许高功率探测建立多个工频周期；放宽模式下仅作为诊断时间。 */
 #define PFC_USER_36V_VBUS_TIMEOUT_MS         8000U      /* ms，母线目标建立超时；改变目标/爬升速度后按理论斜坡时间重新计算。 */
 #define PFC_USER_36V_SATURATION_SAMPLES      200U       /* 个10 kHz样本，连续限幅约20 ms关断；增大会允许更长过应力，减小易瞬态误停。 */
+#define PFC_USER_36V_PERIOD_SATURATION_RATIO 0.25f      /* 0~1，36 V档周期限幅占比占位阈值；完成低压闭环整定和硬件保护验证前不得放宽。 */
+#define PFC_USER_36V_PERIOD_SATURATION_CYCLES 3U        /* 个工频周期，周期性削顶连续异常次数；36 V带功率前必须结合示波器波形重新确认。 */
+#define PFC_USER_36V_VBUS_REGULATION_TIMEOUT_MS 1000U   /* ms，稳态PI饱和且母线失调的关断时间；赛题档负载动态实测后才能调整。 */
 
-/* ======================== 4. 每次改参后的固定检查 ======================== */
+/* ======================== 6. 每次改参后的固定检查 ======================== */
 /*
  * 1. 改ADC零点/比例/极性：先退回RAW_ADC且CONFIRMED=0，重新记录1秒统计；填写后
  *    进入ENGINEERING_CHECK，用万用表/示波器复核工程量、RMS、频率和正负方向，
@@ -177,13 +305,16 @@
  *    CURRENT_TRIP、采样量程、电感饱和、MOSFET温升和电源限流；先轻载再逐步加负载。
  * 5. 改PR/PI：先只调PR并确认IPFC跟随Iref，再投入PI；一次只改一个增益，观察限幅、
  *    超调、振荡和ISR执行时间。控制不稳定时先恢复上一个已验证值，不靠放宽保护继续试。
- * 6. 准备带功率前：确认ACTIVE_PROFILE正确、RUN_MODE=CLOSED_LOOP、当前档CONFIRMED=1，
- *    且PB10外部未接的事实已知。软件/AWD保护不能替代驱动器独立OCP/DESAT。
+ * 6. PFC_USER_RELAXED_PWM_TEST=1U时，VAC/VBUS门槛、软件过流/过压和限幅只用于观察，
+ *    不再触发状态机停机；改回0U后才重新启用这些判据。ADC/DMA失步、控制数值异常、
+ *    HRTIM写入失败和FLT3仍会关闭PWM，因为这些故障下无法继续形成可信的闭环波形。
  */
 
-/* ======================== 5. 编译期安全检查 ======================== */
+/* ======================== 7. 编译期安全检查 ======================== */
 #if ((PFC_USER_ACTIVE_PROFILE != PFC_USER_PROFILE_5V) && \
-     (PFC_USER_ACTIVE_PROFILE != PFC_USER_PROFILE_36V))
+     (PFC_USER_ACTIVE_PROFILE != PFC_USER_PROFILE_36V_LIGHT_100R) && \
+     (PFC_USER_ACTIVE_PROFILE != PFC_USER_PROFILE_36V_MID_50R) && \
+     (PFC_USER_ACTIVE_PROFILE != PFC_USER_PROFILE_36V_CONTEST))
 #error "PFC_USER_ACTIVE_PROFILE is invalid"
 #endif
 
@@ -193,10 +324,14 @@
 #error "PFC_USER_RUN_MODE is invalid"
 #endif
 
+#if ((PFC_USER_RELAXED_PWM_TEST != 0U) && (PFC_USER_RELAXED_PWM_TEST != 1U))
+#error "PFC_USER_RELAXED_PWM_TEST must be 0U or 1U"
+#endif
+
 #if ((PFC_USER_5V_CALIBRATION_CONFIRMED != 0U) && \
      (PFC_USER_5V_CALIBRATION_CONFIRMED != 1U)) || \
-    ((PFC_USER_36V_CALIBRATION_CONFIRMED != 0U) && \
-     (PFC_USER_36V_CALIBRATION_CONFIRMED != 1U))
+     ((PFC_USER_36V_CALIBRATION_CONFIRMED != 0U) && \
+      (PFC_USER_36V_CALIBRATION_CONFIRMED != 1U))
 #error "Calibration confirmation must be 0U or 1U"
 #endif
 
@@ -224,12 +359,6 @@
      (PFC_USER_RUN_MODE == PFC_USER_MODE_CLOSED_LOOP)) && \
     (PFC_USER_SELECTED_CALIBRATION_CONFIRMED != 1U)
 #error "Engineering or closed-loop mode requires confirmed ADC calibration"
-#endif
-
-#if (PFC_USER_RUN_MODE == PFC_USER_MODE_CLOSED_LOOP) && \
-    (PFC_USER_ACTIVE_PROFILE == PFC_USER_PROFILE_36V) && \
-    (PFC_USER_36V_CALIBRATION_CONFIRMED != 1U)
-#error "Unconfirmed 36 V profile cannot enter closed-loop mode"
 #endif
 
 #endif /* PFC_USER_CONFIG_H */

@@ -127,6 +127,23 @@ HAL_StatusTypeDef PFC_HRTIM_SetCompare(uint16_t cmp_a, uint16_t cmp_b)
 }
 
 /**
+ * @brief  使用HRTIM软件更新同时提交Timer A/B的Compare预装载值。
+ * @retval HAL_OK表示软件更新请求已写入，HAL_ERROR表示句柄无效。
+ * @note   由ADC1完整DMA ISR的PRIME投入路径调用，不等待PWM周期且不会开放输出。
+ */
+HAL_StatusTypeDef PFC_HRTIM_CommitCompare(void)
+{
+    if (hhrtim1.Instance != HRTIM1)
+    {
+        return HAL_ERROR;
+    }
+
+    return HAL_HRTIM_SoftwareUpdate(&hhrtim1,
+                                    HRTIM_TIMERUPDATE_A |
+                                    HRTIM_TIMERUPDATE_B);
+}
+
+/**
  * @brief  读取本模块的计数器启动命令镜像。
  * @retval 1表示本模块已成功发出启动且尚未发出停止，0表示未启动或已停止。
  * @note   该值不是硬件运行状态寄存器的实时回读。

@@ -46,6 +46,13 @@ void PFC_HRTIM_StopAll(void);
 HAL_StatusTypeDef PFC_HRTIM_SetCompare(uint16_t cmp_a, uint16_t cmp_b);
 
 /**
+ * @brief  立即把Timer A/B的Compare预装载值同步提交到活动寄存器。
+ * @retval HAL_OK表示软件更新请求成功，其他值表示HRTIM句柄或写入失败。
+ * @note   只提交Compare，不启动计数器、不开放A/B输出；用于过零投入前消除旧50%占空比首周期。
+ */
+HAL_StatusTypeDef PFC_HRTIM_CommitCompare(void);
+
+/**
  * @brief  返回Master/A/B计数器启动命令的软件镜像。
  * @retval 1表示本模块已启动且尚未停止，0表示未启动或已停止。
  * @note   不是HRTIM状态寄存器的实时回读。

@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1200" viewBox="0 0 1600 1200">
+  <defs><style>
+    .title{font:700 48px SimSun,Microsoft YaHei,sans-serif;fill:#20252b;text-anchor:middle}.sub{font:25px SimSun,Microsoft YaHei,sans-serif;fill:#68747f;text-anchor:middle}
+    .panel{fill:#f7f9fb;stroke:#c5ced6;stroke-width:3}.code{font:31px Consolas,"Courier New",SimSun,Microsoft YaHei,monospace;dominant-baseline:middle}.num{font:25px Consolas,monospace;fill:#8a96a3;text-anchor:end;dominant-baseline:middle}
+    .p{fill:#26323d}.k{fill:#1769aa;font-weight:700}.f{fill:#277a55}.e{fill:#b64b42;font-weight:700}.c{fill:#78838d;font-style:italic}.tag{font:23px SimSun,Microsoft YaHei,sans-serif;fill:#fff;text-anchor:middle;dominant-baseline:middle}
+  </style></defs>
+  <rect width="1600" height="1200" fill="#fff"/><text x="800" y="72" class="title">（3）运行监督与故障处理</text><text x="800" y="116" class="sub">正常停机可再次启动；故障停机必须排故后人工复位</text>
+  <rect x="105" y="160" width="1390" height="930" rx="20" fill="#f7f9fb" class="panel"/><rect x="105" y="160" width="1390" height="68" rx="20" fill="#344452"/><text x="800" y="194" class="tag">SUPERVISE_AND_PROTECT()</text>
+  <g class="num"><text x="180" y="280">01</text><text x="180" y="338">02</text><text x="180" y="396">03</text><text x="180" y="454">04</text><text x="180" y="512">05</text><text x="180" y="570">06</text><text x="180" y="628">07</text><text x="180" y="686">08</text><text x="180" y="744">09</text><text x="180" y="802">10</text><text x="180" y="860">11</text><text x="180" y="918">12</text><text x="180" y="976">13</text><text x="180" y="1034">14</text></g>
+  <g class="code">
+    <text x="230" y="280"><tspan class="k">WHILE</tspan><tspan class="p"> (true) {</tspan></text>
+    <text x="280" y="338"><tspan class="f">更新一致性快照</tspan><tspan class="p">();</tspan></text>
+    <text x="280" y="396"><tspan class="k">IF</tspan><tspan class="p"> (检测到任一活动域故障()) {</tspan></text>
+    <text x="330" y="454"><tspan class="e">关闭输出</tspan><tspan class="p">(A~E); </tspan><tspan class="e">锁存三级故障码</tspan><tspan class="p">();</tspan></text>
+    <text x="330" y="512"><tspan class="f">复位控制器</tspan><tspan class="p">(PI, PR, SPWM, CBSVPWM);</tspan></text>
+    <text x="330" y="570"><tspan class="e">停止喂狗</tspan><tspan class="p">(); </tspan><tspan class="e">等待人工复位</tspan><tspan class="p">;</tspan></text>
+    <text x="280" y="628"><tspan class="p">}</tspan></text>
+    <text x="280" y="686"><tspan class="k">IF</tspan><tspan class="p"> (state == JOINT_RUN &amp;&amp; PD0短按()) {</tspan></text>
+    <text x="330" y="744"><tspan class="f">关闭输出</tspan><tspan class="p">(A~E); state = READY;</tspan></text>
+    <text x="330" y="802"><tspan class="c">// 正常停机：不锁存故障，允许再次启动</tspan></text>
+    <text x="280" y="860"><tspan class="p">}</tspan></text>
+    <text x="280" y="918"><tspan class="k">IF</tspan><tspan class="p"> (ADC/心跳/输出状态均健康) </tspan><tspan class="f">喂狗</tspan><tspan class="p">();</tspan></text>
+    <text x="280" y="976"><tspan class="f">OLED任务</tspan><tspan class="p">(100 ms); </tspan><tspan class="f">VOFA任务</tspan><tspan class="p">(10 ms);</tspan></text>
+    <text x="230" y="1034"><tspan class="p">}</tspan><tspan class="c">  // ISR内禁止OLED、阻塞USART和HAL_Delay()</tspan></text>
+  </g>
+</svg>

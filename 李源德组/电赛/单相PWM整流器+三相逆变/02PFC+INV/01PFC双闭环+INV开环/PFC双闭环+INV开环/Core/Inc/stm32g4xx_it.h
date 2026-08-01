@@ -64,6 +64,7 @@ void DMA2_Channel2_IRQHandler(void);
 void DMA2_Channel3_IRQHandler(void);
 void ADC4_IRQHandler(void);
 void ADC5_IRQHandler(void);
+void HRTIM1_Master_IRQHandler(void);
 void HRTIM1_FLT_IRQHandler(void);
 /* USER CODE BEGIN EFP */
 

@@ -16,7 +16,8 @@ typedef enum
     PFC_ADC_CHECK,         /* 标定有效后检查同步采样和工程量有效性。 */
     PFC_PASSIVE_PRECHARGE, /* 等待VAC同步和母线被动建立并连续稳定。 */
     PFC_READY,             /* 启动条件满足，等待PD0完成一次有效短按。 */
-    PFC_CURRENT_LOOP_RAMP, /* PWM已开放，PR内环执行0.20 A RMS探测斜坡。 */
+    PFC_PWM_PRIME,         /* A/B仍关闭，预装VAC/VBUS前馈并等待正向过零。 */
+    PFC_CURRENT_LOOP_RAMP, /* PWM已开放，PR内环执行参数档设定的探测斜坡。 */
     PFC_VBUS_LOOP_RAMP,    /* PI外环已无扰投入，VBUS参考按1 V/s上升。 */
     PFC_VBUS_LOOP_RUN,     /* VBUS进入目标容差后的稳态双闭环。 */
     PFC_STOP,              /* 人工停机后的短暂等待，采样计数器仍运行。 */

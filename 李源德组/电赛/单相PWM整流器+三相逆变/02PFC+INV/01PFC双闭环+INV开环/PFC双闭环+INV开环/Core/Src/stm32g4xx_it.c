@@ -26,6 +26,7 @@
 #include "inv_measure.h"
 #include "pfc_hrtim.h"
 #include "pfc_measure.h"
+#include "hrtim.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -358,6 +359,15 @@ void ADC5_IRQHandler(void)
   /* USER CODE BEGIN ADC5_IRQn 1 */
 
   /* USER CODE END ADC5_IRQn 1 */
+}
+
+/**
+  * @brief HRTIM Master全局中断，10 kHz重复事件由HAL转发到应用回调。
+  * @note 该ISR只负责HAL事件分发；控制计算在回调中执行，禁止在此发送串口或刷新OLED。
+  */
+void HRTIM1_Master_IRQHandler(void)
+{
+  HAL_HRTIM_IRQHandler(&hhrtim1, HRTIM_TIMERINDEX_MASTER);
 }
 
 /**

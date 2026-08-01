@@ -35,6 +35,7 @@
 #define INV_HRTIM_COMPARE_MIN (1700U)
 #define INV_HRTIM_COMPARE_MAX (32300U)
 #define INV_HRTIM_NEUTRAL_CMP (17000U)
+#define INV_HRTIM_DUTY_EPSILON (1.0e-6f)
 
 /* 仅由初始化/故障状态机写入，高频ISR只读取，表示C/D/E时基是否已启动。 */
 static volatile uint8_t inv_timebase_started = 0U;
@@ -123,11 +124,23 @@ HAL_StatusTypeDef INV_HRTIM_SetDuty(float duty_u,
     if ((INV_HRTIM_IsFinite(duty_u) == 0U) ||
         (INV_HRTIM_IsFinite(duty_v) == 0U) ||
         (INV_HRTIM_IsFinite(duty_w) == 0U) ||
-        (duty_u < INV_HRTIM_DUTY_MIN) || (duty_u > INV_HRTIM_DUTY_MAX) ||
-        (duty_v < INV_HRTIM_DUTY_MIN) || (duty_v > INV_HRTIM_DUTY_MAX) ||
-        (duty_w < INV_HRTIM_DUTY_MIN) || (duty_w > INV_HRTIM_DUTY_MAX)) {
+        (duty_u < (INV_HRTIM_DUTY_MIN - INV_HRTIM_DUTY_EPSILON)) ||
+        (duty_u > (INV_HRTIM_DUTY_MAX + INV_HRTIM_DUTY_EPSILON)) ||
+        (duty_v < (INV_HRTIM_DUTY_MIN - INV_HRTIM_DUTY_EPSILON)) ||
+        (duty_v > (INV_HRTIM_DUTY_MAX + INV_HRTIM_DUTY_EPSILON)) ||
+        (duty_w < (INV_HRTIM_DUTY_MIN - INV_HRTIM_DUTY_EPSILON)) ||
+        (duty_w > (INV_HRTIM_DUTY_MAX + INV_HRTIM_DUTY_EPSILON))) {
         return HAL_ERROR;
     }
+
+    /* CBSVPWM的0.90限幅理论上对应0.95占空比；允许单精度末位误差后夹紧，
+       避免正常边界值因浮点舍入被误判为PWM写入故障。 */
+    if (duty_u < INV_HRTIM_DUTY_MIN) { duty_u = INV_HRTIM_DUTY_MIN; }
+    if (duty_u > INV_HRTIM_DUTY_MAX) { duty_u = INV_HRTIM_DUTY_MAX; }
+    if (duty_v < INV_HRTIM_DUTY_MIN) { duty_v = INV_HRTIM_DUTY_MIN; }
+    if (duty_v > INV_HRTIM_DUTY_MAX) { duty_v = INV_HRTIM_DUTY_MAX; }
+    if (duty_w < INV_HRTIM_DUTY_MIN) { duty_w = INV_HRTIM_DUTY_MIN; }
+    if (duty_w > INV_HRTIM_DUTY_MAX) { duty_w = INV_HRTIM_DUTY_MAX; }
 
     return INV_HRTIM_SetCompare(INV_HRTIM_DutyToCompare(duty_u),
                                 INV_HRTIM_DutyToCompare(duty_v),

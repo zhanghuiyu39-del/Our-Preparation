@@ -11,13 +11,14 @@
 /** @brief 双闭环控制器的运行阶段，由PFC应用状态机显式切换。 */
 typedef enum
 {
-    PFC_CONTROL_IDLE = 0,       /* 控制器已复位，不写HRTIM Compare。 */
-    PFC_CONTROL_CURRENT_RAMP,   /* PR电流环探测，RMS指令由0爬升至0.20 A。 */
-    PFC_CONTROL_VBUS_RAMP,      /* PI外环已投入，VBUS参考斜坡上升。 */
-    PFC_CONTROL_VBUS_RUN        /* 9 V母线目标附近的稳态双闭环。 */
+    PFC_CONTROL_IDLE = 0,         /* 控制器已复位，不写HRTIM Compare。 */
+    PFC_CONTROL_CURRENT_RAMP = 1, /* PR电流环探测，RMS指令按活动参数档斜坡上升。 */
+    PFC_CONTROL_VBUS_RAMP = 2,    /* PI外环已投入，VBUS参考斜坡上升。 */
+    PFC_CONTROL_VBUS_RUN = 3,     /* 活动参数档母线目标附近的稳态双闭环。 */
+    PFC_CONTROL_PRIME = 4         /* 输出关闭时预装VAC/VBUS前馈，并等待正向过零投入。 */
 } PFC_ControlMode;
 
-/** @brief ISR发布给主循环、状态机和Keil Watch的一致性控制遥测。 */
+/** @brief ISR发布给主循环、状态机和VOFA的一致性控制遥测。 */
 typedef struct
 {
     float vbus_reference;       /* V，当前母线软启动参考。 */
@@ -38,6 +39,9 @@ typedef struct
     uint8_t modulation_limited; /* 1表示本次调制量被SPWM限幅。 */
     uint8_t current_loop_qualified; /* 1表示电流误差RMS已满足切外环条件。 */
     uint8_t vbus_reference_reached; /* 1表示参考已爬升到最终VBUS目标。 */
+    uint8_t prime_waiting;      /* 1表示仍等待新的正向过零，0表示允许开放A/B输出。 */
+    uint32_t prime_start_cross_sequence; /* PD0启动时记录的VAC正向过零序号。 */
+    float startup_modulation;   /* 开放PWM前已预装的VAC/VBUS前馈调制度。 */
     uint8_t healthy;            /* 1表示控制器及最近一次快速路径均正常。 */
 } PFC_ControlTelemetry;
 

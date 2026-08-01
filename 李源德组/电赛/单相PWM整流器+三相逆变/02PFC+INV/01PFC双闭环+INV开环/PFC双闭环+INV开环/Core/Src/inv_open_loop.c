@@ -12,7 +12,7 @@
  * vu/vv/vw_command交给CBSVPWM_Calc3Leg()计算三桥臂占空比。
  *
  * 数据流如下：
- * 5 V母线和2.5 Vrms线电压目标 -> 相电压峰值/目标调制度
+ * 用户配置的母线和线电压目标 -> 相电压峰值/目标调制度
  * 30/60 Hz频率参数 -> 32位DDS相位 -> 四分之一波正弦表插值
  *                  -> U/V/W三相单位正弦 -> 1 s软启动
  *                  -> U/V/W三相相电压指令 -> main.c/CBSVPWM
@@ -155,7 +155,8 @@ static float INV_OpenLoop_Sine(uint32_t phase)
  * 电压换算关系：
  * Vphase_peak = Vline_rms * sqrt(2/3)
  * modulation  = 2 * Vphase_peak / Vdc
- * 当前5 V母线、2.5 Vrms线电压得到Vphase_peak约2.041 V、调制度约0.816。
+ * 当前36 V档的60 V母线、32 Vrms线电压得到Vphase_peak约26.13 V、
+ * 目标调制度约0.871；最终仍受用户配置的0.90上限约束。
  */
 bool INV_OpenLoop_Init(const INV_OpenLoopConfig *config)
 {
@@ -223,6 +224,9 @@ bool INV_OpenLoop_Init(const INV_OpenLoopConfig *config)
  */
 bool INV_OpenLoop_SetFrequency(INV_OutputFrequency frequency)
 {
+    uint32_t phase_step;
+    uint32_t primask;
+
     if (inv_initialized == 0U) {
         return false;
     }
@@ -232,12 +236,38 @@ bool INV_OpenLoop_SetFrequency(INV_OutputFrequency frequency)
     }
 
     /* 64位除法只在配置路径执行，10 kHz Step仍只进行32位加法。 */
-    inv_phase_step = INV_OpenLoop_CalculatePhaseStep(frequency);
-    if (inv_phase_step == 0U) {
+    phase_step = INV_OpenLoop_CalculatePhaseStep(frequency);
+    if (phase_step == 0U) {
         return false;
     }
 
+    /* 主循环修改频率时，禁止10 kHz ISR看到新旧步进和频率的混合状态。 */
+    primask = __get_PRIMASK();
+    __disable_irq();
+    inv_phase_step = phase_step;
     inv_frequency_hz = (uint16_t)frequency;
+    __set_PRIMASK(primask);
+    return true;
+}
+
+bool INV_OpenLoop_GetFrequency(INV_OutputFrequency *frequency)
+{
+    uint32_t primask;
+    uint16_t current_frequency;
+
+    if ((frequency == NULL) || (inv_initialized == 0U)) {
+        return false;
+    }
+
+    primask = __get_PRIMASK();
+    __disable_irq();
+    current_frequency = inv_frequency_hz;
+    __set_PRIMASK(primask);
+    if ((current_frequency != (uint16_t)INV_FREQ_30HZ) &&
+        (current_frequency != (uint16_t)INV_FREQ_60HZ)) {
+        return false;
+    }
+    *frequency = (INV_OutputFrequency)current_frequency;
     return true;
 }
 
